@@ -1,20 +1,23 @@
-import re
 import sys
 from dataclasses import dataclass
 from llvmlite import ir
 import llvmlite.binding as llvm
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
-RESERVED = {"int", "exit"}
+I32_MAX = 2**31 - 1
 
 
 class CompileError(Exception):
-    """Carries a source position so we can print `line N:C: ...` (or `line N: ...`)."""
-    def __init__(self, lineno, msg, col=None):
+    """Carries a source position so we can print `line N:C: ...`."""
+    def __init__(self, line, col, msg):
         super().__init__(msg)
-        self.lineno = lineno
+        self.line = line
         self.col = col
         self.msg = msg
+
+
+def error_at(token, msg):
+    return CompileError(token.line, token.col, msg)
 
 
 # ---------------------------------------------------------------------------
@@ -80,8 +83,7 @@ def lex(data: bytes):
         if state == "START":
             if b is None or b == NEWLINE:
                 if open_braces:
-                    brace = open_braces[-1]
-                    raise CompileError(brace.line, "'{' is not closed before the end of the line", brace.col)
+                    raise error_at(open_braces[-1], "'{' is not closed before the end of the line")
                 if b is None:
                     break
                 tokens.append(Token("endline", "\n", line, col))
@@ -105,9 +107,9 @@ def lex(data: bytes):
                 elif b == RBRACE and open_braces:
                     open_braces.pop()        # a '}' with no '{' is the parser's problem
             elif b == EQUALS:
-                raise CompileError(line, "unexpected byte '=': assignment is ':='", col)
+                raise CompileError(line, col, "unexpected byte '=': assignment is ':='")
             else:
-                raise CompileError(line, f"unexpected byte {show_byte(b)}", col)
+                raise CompileError(line, col, f"unexpected byte {show_byte(b)}")
 
         elif state == "IDENT":
             if b is not None and (is_alpha(b) or is_digit(b)):
@@ -125,7 +127,7 @@ def lex(data: bytes):
             if b is not None and is_digit(b):
                 pass
             elif b is not None and is_alpha(b):
-                raise CompileError(line, f"invalid number {data[start:i + 1].decode()!r}: a letter inside a number", start_col)
+                raise CompileError(line, start_col, f"invalid number {data[start:i + 1].decode()!r}: a letter inside a number")
             else:
                 tokens.append(Token("constant", data[start:i].decode(), line, start_col, "numeric"))
                 state = "START"
@@ -136,7 +138,7 @@ def lex(data: bytes):
                 tokens.append(Token("operator", ":=", line, start_col, "assign"))
                 state = "START"
             else:
-                raise CompileError(line, "':' must be followed by '='", start_col)
+                raise CompileError(line, start_col, "':' must be followed by '='")
 
         i += 1
         col += 1
@@ -151,16 +153,18 @@ def lex(data: bytes):
 #
 # Expressions produce a value:  Const | Var | BinOp
 # Statements are one per line:  Declare | Assign | Exit
-# Every statement carries the source line number for error messages.
+# Nodes keep the tokens they came from, so every error can point at line:column.
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Const:
     value: int
+    token: Token
 
 @dataclass
 class Var:
     name: str
+    token: Token
 
 @dataclass
 class BinOp:
@@ -170,105 +174,184 @@ class BinOp:
 
 @dataclass
 class Declare:
-    name: str
-    lineno: int
+    name: Token
+    mutable: bool
+    init: object     # Const | Var | BinOp
+    first: Token     # the statement's first token
 
 @dataclass
 class Assign:
-    target: str
+    target: Token
     expr: object     # Const | Var | BinOp
-    lineno: int
+    first: Token
 
 @dataclass
 class Exit:
-    name: str
-    lineno: int
+    operand: object  # Const | Var
+    first: Token
 
 
 # ---------------------------------------------------------------------------
-# Phase 1: parse text -> AST  (syntax errors only)
+# Phase 1: tokens -> AST  (syntax errors only)
+#
+# One statement per line, so each line of tokens is parsed on its own:
+#   declaration:  i32 [mut] name { expr }
+#   assignment:   name := expr
+#   exit:         exit operand
+#   expr:         operand [ (+ | - | *) operand ]
+#   operand:      number | name
 # ---------------------------------------------------------------------------
 
-def parse_name(token, lineno):
-    """A bare identifier: letters/digits/_, not starting with a digit, not reserved."""
-    token = token.strip()
-    if not token.isidentifier() or token in RESERVED:
-        raise CompileError(lineno, f"bad variable name {token!r}")
-    return token
+OPERATORS = {"plus", "minus", "times"}
 
 
-def parse_operand(token, lineno):
-    """One operand of an expression: an integer constant or a variable."""
-    token = token.strip()
-    if not token:
-        raise CompileError(lineno, "missing operand")
-    if re.fullmatch(r"\d+", token):
-        return Const(int(token))
-    return Var(parse_name(token, lineno))
+def describe(token):
+    if token.kind == "endline":
+        return "the end of the line"
+    if token.kind == "keyword":
+        return f"keyword '{token.text}'"
+    return f"'{token.text}'"
 
 
-def parse_expr(rhs, lineno):
-    """Right-hand side of `:=`: a single operand, or `operand op operand`."""
-    # Split on a single +, - or * with optional surrounding spaces.
-    parts = re.split(r"\s*([+\-*])\s*", rhs.strip())
-    if len(parts) == 1:                      # just an operand
-        return parse_operand(parts[0], lineno)
-    if len(parts) == 3:                      # operand op operand
-        left, op, right = parts
-        return BinOp(op, parse_operand(left, lineno), parse_operand(right, lineno))
-    raise CompileError(lineno, f"expected at most one operator in {rhs.strip()!r}")
+class LineParser:
+    """A cursor over the tokens of one line. The line always ends with an
+    endline token, so peek() never runs past the end."""
+
+    def __init__(self, tokens):
+        last = tokens[-1]
+        if last.kind != "endline":           # last line of a file without a trailing newline
+            tokens = tokens + [Token("endline", "", last.line, last.col + len(last.text))]
+        self.tokens = tokens
+        self.pos = 0
+
+    def peek(self):
+        return self.tokens[self.pos]
+
+    def advance(self):
+        token = self.tokens[self.pos]
+        if token.kind != "endline":
+            self.pos += 1
+        return token
+
+    def at(self, kind, sub=None):
+        token = self.peek()
+        return token.kind == kind and (sub is None or token.sub == sub)
+
+    def expect(self, kind, sub, what):
+        if not self.at(kind, sub):
+            raise error_at(self.peek(), f"expected {what}, found {describe(self.peek())}")
+        return self.advance()
+
+    def statement(self):
+        first = self.peek()
+        if self.at("keyword", "typename"):
+            stmt = self.declaration()
+        elif self.at("keyword", "statement"):
+            self.advance()
+            stmt = Exit(self.operand(), first)
+        elif self.at("identifier"):
+            target = self.advance()
+            self.expect("operator", "assign", f"':=' after '{target.text}'")
+            stmt = Assign(target, self.expr(), first)
+        else:
+            raise error_at(first, f"a statement must start with 'i32', 'exit' or a variable, found {describe(first)}")
+        self.end()
+        return stmt
+
+    def declaration(self):
+        first = self.advance()               # i32
+        mutable = self.at("keyword", "specifier")
+        if mutable:
+            self.advance()
+        name = self.expect("identifier", None, "a variable name")
+        if not self.at("block", "start"):
+            raise error_at(name, f"variable '{name.text}' needs an initialiser in {{}}")
+        self.advance()
+        init = self.expr()
+        self.expect("block", "end", "'}'")
+        return Declare(name, mutable, init, first)
+
+    def expr(self):
+        left = self.operand()
+        if self.peek().sub not in OPERATORS:
+            return left
+        op = self.advance()
+        right = self.operand()
+        if self.peek().sub in OPERATORS:
+            raise error_at(self.peek(), "only one operation (+, -, *) is allowed in an expression")
+        return BinOp(op.text, left, right)
+
+    def operand(self):
+        token = self.peek()
+        if token.kind == "constant":
+            if int(token.text) > I32_MAX:
+                raise error_at(token, f"constant {token.text} does not fit in i32 (max {I32_MAX})")
+            self.advance()
+            return Const(int(token.text), token)
+        if token.kind == "identifier":
+            self.advance()
+            return Var(token.text, token)
+        raise error_at(token, f"expected a number or a variable, found {describe(token)}")
+
+    def end(self):
+        token = self.peek()
+        if token.kind != "endline":
+            raise error_at(token, f"unexpected {describe(token)} after the end of the statement")
 
 
-def parse_line(line, lineno):
-    line = line.strip()
-
-    if line.startswith("int "):
-        return Declare(parse_name(line[4:], lineno), lineno)
-
-    if line.startswith("exit "):
-        return Exit(parse_name(line[5:], lineno), lineno)
-
-    if ":=" in line:
-        lhs, rhs = line.split(":=", 1)
-        return Assign(parse_name(lhs, lineno), parse_expr(rhs, lineno), lineno)
-
-    raise CompileError(lineno, f"cannot parse: {line!r}")
-
-
-def parse(lines):
+def parse(token_lines):
     """Return a list of statement nodes, skipping blank lines."""
     stmts = []
-    for lineno, raw in enumerate(lines, start=1):
-        if raw.strip():
-            stmts.append(parse_line(raw, lineno))
+    for tokens in token_lines:
+        if all(t.kind == "endline" for t in tokens):
+            continue
+        stmts.append(LineParser(tokens).statement())
     return stmts
 
 
+def end_of_input(token_lines):
+    """Position just past the last token, for errors about the program as a whole."""
+    if not token_lines:
+        return 1, 1
+    last = token_lines[-1][-1]
+    return last.line, last.col + (0 if last.kind == "endline" else len(last.text))
+
+
 # ---------------------------------------------------------------------------
-# Phase 2: AST -> IR  (semantic errors: declared/undeclared)
+# Phase 2: AST -> IR  (semantic errors: declaration before use, mut)
 # ---------------------------------------------------------------------------
 
-def emit_operand(builder, symbols, node, lineno):
+@dataclass
+class Symbol:
+    ptr: object      # the alloca
+    mutable: bool
+    declared: Token
+
+
+def lookup(symbols, token):
+    if token.text not in symbols:
+        raise error_at(token, f"variable '{token.text}' is used before its declaration")
+    return symbols[token.text]
+
+
+def emit_operand(builder, symbols, node):
     """Turn a Const or Var into an IR value."""
     if isinstance(node, Const):
         return ir.Constant(I32, node.value)
-    # Var
-    if node.name not in symbols:
-        raise CompileError(lineno, f"undeclared variable {node.name!r}")
-    return builder.load(symbols[node.name])
+    return builder.load(lookup(symbols, node.token).ptr)
 
 
-def emit_expr(builder, symbols, expr, lineno):
+def emit_expr(builder, symbols, expr):
     if isinstance(expr, BinOp):
-        lhs = emit_operand(builder, symbols, expr.left, lineno)
-        rhs = emit_operand(builder, symbols, expr.right, lineno)
+        lhs = emit_operand(builder, symbols, expr.left)
+        rhs = emit_operand(builder, symbols, expr.right)
         op = {"+": builder.add, "-": builder.sub, "*": builder.mul}[expr.op]
         return op(lhs, rhs)
-    return emit_operand(builder, symbols, expr, lineno)
+    return emit_operand(builder, symbols, expr)
 
 
-def codegen(stmts):
-    module = ir.Module(name="practice1")
+def codegen(stmts, end):
+    module = ir.Module(name="practice2")
     module.triple = llvm.get_default_triple()
 
     main = ir.Function(module, ir.FunctionType(I32, []), name="main")
@@ -285,37 +368,38 @@ def codegen(stmts):
     fmt.linkage, fmt.global_constant = "private", True
     fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
 
-    symbols = {}          # name -> alloca pointer
+    symbols = {}          # name -> Symbol
     seen_exit = False
 
     for stmt in stmts:
         if seen_exit:
-            raise CompileError(stmt.lineno, "statement after exit")
+            raise error_at(stmt.first, "'exit' must be the last statement")
 
         if isinstance(stmt, Declare):
-            if stmt.name in symbols:
-                raise CompileError(stmt.lineno, f"redeclared variable {stmt.name!r}")
-            symbols[stmt.name] = builder.alloca(I32, name=stmt.name)
+            name = stmt.name.text
+            if name in symbols:
+                prev = symbols[name].declared
+                raise error_at(stmt.name, f"variable '{name}' is already declared at line {prev.line}:{prev.col}")
+            # The initialiser is evaluated before the name exists, so `i32 t{t}` is an error.
+            value = emit_expr(builder, symbols, stmt.init)
+            ptr = builder.alloca(I32, name=name)
+            builder.store(value, ptr)
+            symbols[name] = Symbol(ptr, stmt.mutable, stmt.name)
 
         elif isinstance(stmt, Assign):
-            if stmt.target not in symbols:
-                raise CompileError(stmt.lineno, f"undeclared variable {stmt.target!r}")
-            value = emit_expr(builder, symbols, stmt.expr, stmt.lineno)
-            builder.store(value, symbols[stmt.target])
+            symbol = lookup(symbols, stmt.target)
+            if not symbol.mutable:
+                raise error_at(stmt.target, f"cannot assign to '{stmt.target.text}': it is not mut")
+            builder.store(emit_expr(builder, symbols, stmt.expr), symbol.ptr)
 
         elif isinstance(stmt, Exit):
-            if stmt.name not in symbols:
-                raise CompileError(stmt.lineno, f"undeclared variable {stmt.name!r}")
-            builder.call(printf, [
-                builder.bitcast(fmt, ir.PointerType(I8)),
-                builder.load(symbols[stmt.name]),
-            ])
+            value = emit_operand(builder, symbols, stmt.operand)
+            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
             builder.ret(ir.Constant(I32, 0))
             seen_exit = True
 
     if not seen_exit:
-        last = stmts[-1].lineno if stmts else 1
-        raise CompileError(last, "program has no exit statement")
+        raise CompileError(*end, "program has no exit statement")
 
     return module
 
@@ -323,9 +407,17 @@ def codegen(stmts):
 # ---------------------------------------------------------------------------
 
 def report(e):
-    where = f"{e.lineno}:{e.col}" if e.col is not None else f"{e.lineno}"
-    print(f"compilation error: line {where}: {e.msg}", file=sys.stderr)
+    print(f"compilation error: line {e.line}:{e.col}: {e.msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def read_source(path):
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except OSError as e:
+        print(f"error: cannot read {path}: {e.strerror}", file=sys.stderr)
+        sys.exit(2)
 
 
 def main():
@@ -336,8 +428,7 @@ def main():
         sys.exit(2)
 
     if args[0] == "--tokens":                # debug: print the token stream, one source line per row
-        with open(args[1], "rb") as f:
-            data = f.read()
+        data = read_source(args[1])
         try:
             token_lines = lex(data)
         except CompileError as e:
@@ -347,13 +438,10 @@ def main():
         return
 
     src_path, out_path = args
-    with open(src_path, "rb") as f:
-        data = f.read()
-
+    data = read_source(src_path)
     try:
-        lex(data)                            # lexical errors first
-        # The statement layer still reads text; Task 2 moves it onto the tokens.
-        module = codegen(parse(data.decode().splitlines(keepends=True)))
+        token_lines = lex(data)
+        module = codegen(parse(token_lines), end_of_input(token_lines))
     except CompileError as e:
         report(e)
 

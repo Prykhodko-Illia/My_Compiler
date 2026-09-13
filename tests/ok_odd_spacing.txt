@@ -1,0 +1,9 @@
+
+
+   i32	mut   x   {   3   }
+
+	i32 y{x*x}
+x:=y-  1
+
+
+exit	x
