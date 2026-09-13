@@ -1,0 +1,162 @@
+AI usage log - Practice 2 (a lexer as a state machine)
+======================================================
+
+Tool:    Claude Code (Claude desktop app, Code tab)
+Model:   Claude Opus 5 (claude-opus-5)
+Date:    2026-09-13
+Setup:   The AI ran commands on my Multipass VM (noble-compilers) with `multipass exec`,
+         and edited files in ~/Study/compilers, which is mounted into the VM.
+         I made all git commits and pushes myself.
+
+Below is every prompt I sent, quoted as written, followed by what the AI did.
+
+
+1. Prompt:
+   "Hello, Claude. I have to do some tasks on the multipass machine with the name noble-compilers.
+   which information should I provide to you so that we could work synchronously with you.
+   May be, create one repository here and another one the machine?"
+
+   What the AI did:
+   Checked that multipass was installed and that the noble-compilers VM was running (Ubuntu 24.04,
+   1 CPU, ~1 GB RAM, ~1.4 GB free disk). Explained that no credentials were needed, and suggested one
+   folder on the Mac mounted into the VM instead of two separate repositories.
+
+
+2. Prompt:
+   [attached w01-practice.pdf]
+   "/home/ubuntu/my-compiler - here is the path to the directory with already implemented practice 1.
+   check this out"
+
+   What the AI did:
+   Read the Practice 1 PDF and my compiler.py and tests on the VM. Checked the LLVM/llvmlite setup,
+   ran every test through llc, clang and lli, and tried about 20 edge cases. Reported what worked and
+   what was missing: no expected-output files for tests, Unicode names accepted, tabs rejected,
+   32-bit overflow not detected, and a traceback on a missing file.
+
+
+3. Prompt:
+   [attached w02-practice.pdf]
+   "ok, great. I already submitted practice 1? so no worrying about it right now.
+   DO NOT do anything. just check what the task 2 should be. then provide me brief information in
+   such format: 1. Practice 1 possible additions or corrections: crucial and not very importnant
+   2. what I already have in the practice 1, actually, you can even show me model
+   3. what should be implemented in the practice 2 and how this model will be changed
+   4. Other things worth my attention"
+
+   What the AI did:
+   Read the Practice 2 PDF without changing anything. Gave a summary in the requested format:
+   Practice 1 gaps, a diagram of the existing pipeline and AST, the new lexer -> tokens -> parser ->
+   AST -> codegen pipeline with the node changes, and admin requirements (Git repo, practice-2
+   branch, PR, reviewer, README, ai_usage.txt).
+
+
+4. Prompt:
+   "ok, great, let's start with commiting first practice and creating repo for it.
+   I will do that by myself, just remind me name of the folder where I should do it
+   and tell whether I have to do it with one commit or more?"
+
+   What the AI did:
+   Told me to use ~/Study/compilers (mounted into the VM) and to copy the code there first.
+   Explained that Practice 1 should be one commit on main, without build outputs, and that
+   Practice 2 work goes on a practice-2 branch.
+
+
+5. Prompt:
+   "done, repo created and pushed"
+
+   What the AI did:
+   Checked the repository: remote, commits, tracked files and branch. Confirmed that Practice 1 was
+   committed correctly on main. Pointed out that README.md and .gitignore were still missing.
+
+
+6. Prompt:
+   "let's do all the tasks first and only then add README.md as it will contain the full view.
+   before add .gitignore, I will commit by myself"
+
+   What the AI did:
+   Created .gitignore (Python caches, venv, *.ll, *.o, program, .DS_Store) without committing it.
+
+
+7. Prompt:
+   "committed, let's start the lexer"
+
+   What the AI did:
+   Wrote Task 1: a hand-written byte-by-byte state machine lexer (states START, IDENT, NUMBER, COLON)
+   that produces tokens with kind, text, line and column, and reports lexical errors with
+   line:column. Added a --tokens debug option, then tested it on the VM with the worked example from
+   the PDF and every lexical error case.
+
+
+8. Prompt:
+   "committed, let's start task 2"
+
+   What the AI did:
+   Replaced the old text-based parser with a token-driven parser. Added AST nodes with positions,
+   and codegen checks for mut, declaration before use, redeclaration and a missing exit.
+   Wrote 7 valid and 14 invalid tests with .expected files, plus run_tests.sh and full_compiler.sh.
+   The first test run found a wrong error message for "two operations"; the AI fixed it, and all
+   21 tests passed.
+
+
+9. Prompt:
+   "commited, now let's refactor code into different files, so such things as lexer, parser and so on
+   will be separated"
+
+   What the AI did:
+   Split compiler.py into errors.py, lexer.py, ast_nodes.py, parser.py and codegen.py, keeping
+   compiler.py as the entry point. Used the name ast_nodes.py so it does not shadow Python's
+   standard ast module. Re-ran all tests and the demo from another directory to confirm nothing changed.
+
+
+10. Prompt:
+   "committed, now let's write the README.md. write all the things that is required in the task"
+
+   What the AI did:
+   Wrote README.md with setup, how to run the compiler (lli, llc + clang, full_compiler.sh,
+   --tokens), how to run and add tests, the language rules, the error format and table, and the
+   project layout with an explanation of each phase.
+
+
+11. Prompt:
+   "make it more interesting, add some black hood vibes to the text, but kepp the censor"
+
+   What the AI did:
+   Restyled the README with a hacker-hoodie tone: an ASCII-art title, opening and closing quotes,
+   emoji section headers and livelier wording. All commands, outputs and rules stayed the same.
+
+
+12. Prompt:
+   "add like more n***a slang"   [slur censored in this log]
+
+   What the AI did:
+   Declined to add the slur or to write the README as a caricature. Suggested slang without slurs
+   instead (for example "no cap", "caught lacking", "goes hard") and asked whether to use it.
+
+
+13. Prompt:
+   "great, add "cuh" in the end ond some phrases. that's how we, black people, talk? I need it"
+
+   What the AI did:
+   Added "cuh" and a few slang phrases to the README's intro, headers and closing quote, without
+   changing any technical content. Explained that these phrases come from Black American and
+   hip-hop slang, but that there is no single way all Black people talk.
+
+
+14. Prompt:
+   "great, also please create folder where all of these .py files will be stored, maybe "arc""
+   [interrupted, then re-sent as:]
+   "great, also please create folder where all of these .py files will be stored, maybe "src""
+
+   What the AI did:
+   Moved the modules into src/ as a package with relative imports, and kept compiler.py at the root
+   because the course requires it there. Updated the README layout, then re-ran all 21 tests and the
+   demo from another directory.
+
+
+15. Prompt:
+   "committed, now let's add ai_usage.txt. can I share link to that chat?
+   If yes, tell me how to do it, and I will add link.
+   If no, then just record every my prompt and 2-3 sentences of what you did after that"
+
+   What the AI did:
+   Wrote this file.
