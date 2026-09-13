@@ -164,26 +164,27 @@ compilation error: line 2:1: cannot assign to 'x': it is not mut
 ## 🗂️ What's in the repo
 
 ```
-compiler.py       entry point: command-line arguments, --tokens, error reporting, writes output.ll
-lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON)
-parser.py         LineParser: turns each line of tokens into a statement node
-ast_nodes.py      AST: Const, Var, BinOp, Declare, Assign, Exit
-codegen.py        builds the IR with llvmlite.ir.IRBuilder, checks mut and declaration before use
-errors.py         CompileError with line and column
-tests/            ok_*.txt and err_*.txt programs with their .expected files
-run_tests.sh      runs every test and compares it against its .expected file
-full_compiler.sh  compiler.py + llc + clang + run, in one shot
+compiler.py         entry point: command-line arguments, --tokens, error reporting, writes output.ll
+src/
+  lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON)
+  parser.py         LineParser: turns each line of tokens into a statement node
+  ast_nodes.py      AST: Const, Var, BinOp, Declare, Assign, Exit
+  codegen.py        builds the IR with llvmlite.ir.IRBuilder, checks mut and declaration before use
+  errors.py         CompileError with line and column
+tests/              ok_*.txt and err_*.txt programs with their .expected files
+run_tests.sh        runs every test and compares it against its .expected file
+full_compiler.sh    compiler.py + llc + clang + run, in one shot
 ```
 
 ### 🔦 How it works
 
-1. **Lexer** (`lexer.py`): one loop reads the source one byte at a time, with an explicit state.
+1. **Lexer** (`src/lexer.py`): one loop reads the source one byte at a time, with an explicit state.
    No regular expressions, no `split()`, no lexer generator. A word is checked against the keyword table
    only once it is complete. Every token records its kind, text, line and column.
    The result is a list of lines, each a list of tokens.
-2. **Parser** (`parser.py`): works on tokens only and never touches the source text. Each line is parsed on its own:
+2. **Parser** (`src/parser.py`): works on tokens only and never touches the source text. Each line is parsed on its own:
    `i32 [mut] name { expr }`, `name := expr` or `exit operand`, where `expr` is `operand [op operand]`.
-3. **Code generation** (`codegen.py`): a `main` function with one `entry` block.
+3. **Code generation** (`src/codegen.py`): a `main` function with one `entry` block.
    - A declaration is an `alloca` plus a `store` of the initialiser.
    - A variable read is a `load`, and an operation is `add`, `sub` or `mul`.
    - An assignment is a `store`.

@@ -9,7 +9,7 @@ Nodes keep the tokens they came from, so every error can point at line:column.
 
 from dataclasses import dataclass
 
-from lexer import Token
+from .lexer import Token
 
 
 @dataclass

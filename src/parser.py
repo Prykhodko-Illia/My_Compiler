@@ -8,9 +8,9 @@ One statement per line, so each line of tokens is parsed on its own:
   operand:      number | name
 """
 
-from ast_nodes import Assign, BinOp, Const, Declare, Exit, Var
-from errors import error_at
-from lexer import Token
+from .ast_nodes import Assign, BinOp, Const, Declare, Exit, Var
+from .errors import error_at
+from .lexer import Token
 
 I32_MAX = 2**31 - 1
 OPERATORS = {"plus", "minus", "times"}

@@ -6,10 +6,10 @@ source bytes --lexer--> tokens --parser--> AST --codegen--> str(module) -> outpu
 
 import sys
 
-from codegen import codegen
-from errors import CompileError
-from lexer import lex
-from parser import end_of_input, parse
+from src.codegen import codegen
+from src.errors import CompileError
+from src.lexer import lex
+from src.parser import end_of_input, parse
 
 
 def report(e):

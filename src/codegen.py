@@ -5,9 +5,9 @@ from dataclasses import dataclass
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from ast_nodes import Assign, BinOp, Const, Declare, Exit
-from errors import CompileError, error_at
-from lexer import Token
+from .ast_nodes import Assign, BinOp, Const, Declare, Exit
+from .errors import CompileError, error_at
+from .lexer import Token
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
 

@@ -8,7 +8,7 @@ START (`continue` without advancing) -- the only byte ever re-examined.
 
 from dataclasses import dataclass
 
-from errors import CompileError, error_at
+from .errors import CompileError, error_at
 
 
 @dataclass
