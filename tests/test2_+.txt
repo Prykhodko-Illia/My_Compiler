@@ -1,0 +1,13 @@
+
+
+int x
+int y
+int z
+x := 22
+y := x
+int a
+a := y - 21
+int b
+b := x * 3
+z := a + b
+exit z

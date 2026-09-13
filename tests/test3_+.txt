@@ -1,0 +1,24 @@
+
+
+int x
+int y
+x := 14
+y := 25
+int z
+int a
+z := 22
+a := 4
+
+int b
+b := a * z
+int c
+c := x * y
+int d
+d := c * a
+int e
+e := b + d
+exit d
+
+
+
+
