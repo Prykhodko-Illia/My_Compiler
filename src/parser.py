@@ -1,128 +1,165 @@
 """Phase 1: tokens -> AST  (syntax errors only)
 
-One statement per line, so each line of tokens is parsed on its own:
-  declaration:  i32 [mut] name { expr }
-  assignment:   name := expr
-  exit:         exit operand
-  expr:         operand [ (+ | - | *) operand ]
-  operand:      number | name
+Recursive descent, written by hand: one method per rule of grammar.ebnf.
+
+  program   ::= { statement } exit
+  statement ::= decl | assign
+  decl      ::= "i32" [ "mut" ] ident "{" expr "}"
+  assign    ::= ident ":=" expr
+  exit      ::= "exit" operand
+  expr      ::= term { ( "+" | "-" ) term }
+  term      ::= operand { "*" operand }
+  operand   ::= number | ident
+
+peek() returns the current token of the current line, or None at the end of the line;
+eat() returns it and moves on. One token of look-ahead decides every choice: the parser
+never scans ahead through the line. It reads tokens only, never the source text, and
+puts no token into the tree.
 """
 
-from .ast_nodes import Assign, BinOp, Const, Declare, Exit, Var
-from .errors import error_at
-from .lexer import Token
+from .ast_nodes import (AssignNode, BinOpNode, ConstNode, DeclNode, ExitNode,
+                        ProgramNode, VarNode)
+from .errors import CompileError
 
 I32_MAX = 2**31 - 1
-OPERATORS = {"plus", "minus", "times"}
 
 
 def describe(token):
-    if token.kind == "endline":
-        return "the end of the line"
+    if token is None:
+        return "end of line"
     if token.kind == "keyword":
         return f"keyword '{token.text}'"
     return f"'{token.text}'"
 
 
-class LineParser:
-    """A cursor over the tokens of one line. The line always ends with an
-    endline token, so peek() never runs past the end."""
+class Parser:
+    def __init__(self, token_lines):
+        self.lines = token_lines          # [[Token]] from the lexer, one list per line
+        self.toks, self.pos = [], 0       # the tokens of the line being parsed
+        self.end = (1, 1)                 # just past the last token of that line
 
-    def __init__(self, tokens):
-        last = tokens[-1]
-        if last.kind != "endline":           # last line of a file without a trailing newline
-            tokens = tokens + [Token("endline", "", last.line, last.col + len(last.text))]
-        self.tokens = tokens
-        self.pos = 0
+    # -- reading the current line ------------------------------------------
 
     def peek(self):
-        return self.tokens[self.pos]
+        return self.toks[self.pos] if self.pos < len(self.toks) else None
 
-    def advance(self):
-        token = self.tokens[self.pos]
-        if token.kind != "endline":
-            self.pos += 1
+    def eat(self):
+        token = self.toks[self.pos]
+        self.pos += 1
         return token
 
     def at(self, kind, sub=None):
         token = self.peek()
-        return token.kind == kind and (sub is None or token.sub == sub)
+        return token is not None and token.kind == kind and (sub is None or token.sub == sub)
+
+    def error(self, msg, token=None):
+        """An error at `token`, or -- when the line ended too early -- at the column
+        right after its last token, where something should have been typed."""
+        token = token or self.peek()
+        if token is None:
+            return CompileError(self.end[0], self.end[1], msg)
+        return CompileError(token.line, token.col, msg)
 
     def expect(self, kind, sub, what):
         if not self.at(kind, sub):
-            raise error_at(self.peek(), f"expected {what}, found {describe(self.peek())}")
-        return self.advance()
+            raise self.error(f"expected {what}, found {describe(self.peek())}")
+        return self.eat()
 
-    def statement(self):
-        first = self.peek()
+    def start_line(self, tokens):
+        self.toks = [t for t in tokens if t.kind != "endline"]
+        self.pos = 0
+        last = self.toks[-1]
+        self.end = (last.line, last.col + len(last.text))
+
+    # -- one method per rule ------------------------------------------------
+
+    def parse_program(self):
+        """program ::= { statement } exit"""
+        statements, exit_node = [], None
+        for tokens in self.lines:
+            if all(t.kind == "endline" for t in tokens):       # blank line
+                continue
+            self.start_line(tokens)
+            first = self.peek()
+
+            if exit_node is not None:
+                raise self.error("'exit' must be the last statement", first)
+            if self.at("keyword", "statement"):
+                exit_node = self.parse_exit()
+            else:
+                statements.append(self.parse_statement())
+
+            if self.peek() is not None:                        # the line must be empty now
+                raise self.error(f"unexpected {describe(self.peek())} after the statement")
+
+        if exit_node is None:
+            raise CompileError(self.end[0], self.end[1], "program has no exit statement")
+        head = statements[0] if statements else exit_node
+        return ProgramNode(head.line, head.col, statements, exit_node)
+
+    def parse_statement(self):
+        """statement ::= decl | assign"""
         if self.at("keyword", "typename"):
-            stmt = self.declaration()
-        elif self.at("keyword", "statement"):
-            self.advance()
-            stmt = Exit(self.operand(), first)
-        elif self.at("identifier"):
-            target = self.advance()
-            self.expect("operator", "assign", f"':=' after '{target.text}'")
-            stmt = Assign(target, self.expr(), first)
-        else:
-            raise error_at(first, f"a statement must start with 'i32', 'exit' or a variable, found {describe(first)}")
-        self.end()
-        return stmt
+            return self.parse_decl()
+        if self.at("identifier"):
+            return self.parse_assign()
+        raise self.error(f"a statement must start with 'i32', 'exit' or a variable, found {describe(self.peek())}")
 
-    def declaration(self):
-        first = self.advance()               # i32
+    def parse_decl(self):
+        """decl ::= "i32" [ "mut" ] ident "{" expr "}" """
+        self.eat()                                             # i32
         mutable = self.at("keyword", "specifier")
         if mutable:
-            self.advance()
+            self.eat()
         name = self.expect("identifier", None, "a variable name")
         if not self.at("block", "start"):
-            raise error_at(name, f"variable '{name.text}' needs an initialiser in {{}}")
-        self.advance()
-        init = self.expr()
+            raise self.error(f"variable '{name.text}' needs an initialiser in {{}}", name)
+        self.eat()                                             # {
+        init = self.parse_expr()
         self.expect("block", "end", "'}'")
-        return Declare(name, mutable, init, first)
+        return DeclNode(name.line, name.col, name.text, mutable, init)
 
-    def expr(self):
-        left = self.operand()
-        if self.peek().sub not in OPERATORS:
-            return left
-        op = self.advance()
-        right = self.operand()
-        if self.peek().sub in OPERATORS:
-            raise error_at(self.peek(), "only one operation (+, -, *) is allowed in an expression")
-        return BinOp(op.text, left, right)
+    def parse_assign(self):
+        """assign ::= ident ":=" expr"""
+        name = self.eat()
+        self.expect("operator", "assign", f"':=' after '{name.text}'")
+        return AssignNode(name.line, name.col, name.text, self.parse_expr())
 
-    def operand(self):
+    def parse_exit(self):
+        """exit ::= "exit" operand -- a constant or a variable, never an operation"""
+        keyword = self.eat()
+        return ExitNode(keyword.line, keyword.col, self.parse_operand())
+
+    def parse_expr(self):
+        """expr ::= term { ( "+" | "-" ) term }"""
+        node = self.parse_term()
+        while self.at("operator", "plus") or self.at("operator", "minus"):
+            op = self.eat()
+            node = BinOpNode(op.line, op.col, op.text, node, self.parse_term())
+        return node
+
+    def parse_term(self):
+        """term ::= operand { "*" operand }"""
+        node = self.parse_operand()
+        while self.at("operator", "times"):
+            op = self.eat()
+            node = BinOpNode(op.line, op.col, op.text, node, self.parse_operand())
+        return node
+
+    def parse_operand(self):
+        """operand ::= number | ident"""
         token = self.peek()
-        if token.kind == "constant":
+        if token is not None and token.kind == "constant":
             if int(token.text) > I32_MAX:
-                raise error_at(token, f"constant {token.text} does not fit in i32 (max {I32_MAX})")
-            self.advance()
-            return Const(int(token.text), token)
-        if token.kind == "identifier":
-            self.advance()
-            return Var(token.text, token)
-        raise error_at(token, f"expected a number or a variable, found {describe(token)}")
-
-    def end(self):
-        token = self.peek()
-        if token.kind != "endline":
-            raise error_at(token, f"unexpected {describe(token)} after the end of the statement")
+                raise self.error(f"constant {token.text} does not fit in i32 (max {I32_MAX})", token)
+            self.eat()
+            return ConstNode(token.line, token.col, int(token.text))
+        if token is not None and token.kind == "identifier":
+            self.eat()
+            return VarNode(token.line, token.col, token.text)
+        raise self.error(f"expected a constant or a variable, found {describe(token)}")
 
 
 def parse(token_lines):
-    """Return a list of statement nodes, skipping blank lines."""
-    stmts = []
-    for tokens in token_lines:
-        if all(t.kind == "endline" for t in tokens):
-            continue
-        stmts.append(LineParser(tokens).statement())
-    return stmts
-
-
-def end_of_input(token_lines):
-    """Position just past the last token, for errors about the program as a whole."""
-    if not token_lines:
-        return 1, 1
-    last = token_lines[-1][-1]
-    return last.line, last.col + (0 if last.kind == "endline" else len(last.text))
+    """Return the ProgramNode for a lexed source."""
+    return Parser(token_lines).parse_program()
