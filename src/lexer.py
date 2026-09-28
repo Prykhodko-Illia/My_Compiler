@@ -1,9 +1,12 @@
 """Phase 0: bytes -> tokens  (lexical errors only)
 
 A hand-written state machine: one loop, one byte per step. The state says
-what we are in the middle of (nothing, a word, a number, a ':'), the byte's
-class says what happens next. A byte that ends a token is read again in
-START (`continue` without advancing) -- the only byte ever re-examined.
+what we are in the middle of (nothing, a word, a number, a ':', an '=', a '!'),
+the byte's class says what happens next. A byte that ends a token is read again
+in START (`continue` without advancing) -- the only byte ever re-examined.
+
+The two-byte operators ('==', '!=', ':=') each get a state that accepts exactly
+one more byte, so the scanner never looks ahead.
 """
 
 from dataclasses import dataclass
@@ -17,7 +20,8 @@ class Token:
     text: str
     line: int
     col: int         # 1-based position of the token's first byte
-    sub: str = ""    # typename | specifier | statement | numeric | start | end | assign | plus | minus | times
+    sub: str = ""    # typename | specifier | statement | boolean | numeric
+                     # start | end | assign | plus | minus | times | eq | ne
 
     def __str__(self):
         text = "\\n" if self.kind == "endline" else self.text
@@ -25,7 +29,15 @@ class Token:
         return f"({fields}) {self.line}:{self.col}"
 
 
-KEYWORDS = {b"i32": "typename", b"mut": "specifier", b"exit": "statement"}
+KEYWORDS = {
+    b"i32": "typename",
+    b"i64": "typename",
+    b"bool": "typename",
+    b"mut": "specifier",
+    b"exit": "statement",
+    b"true": "boolean",
+    b"false": "boolean",
+}
 
 SINGLE_BYTE = {                  # tokens that are complete after one byte
     ord("{"): ("block", "start"),
@@ -36,7 +48,8 @@ SINGLE_BYTE = {                  # tokens that are complete after one byte
 }
 
 SPACE, TAB, NEWLINE = 32, 9, 10
-COLON, EQUALS, LBRACE, RBRACE = ord(":"), ord("="), ord("{"), ord("}")
+COLON, EQUALS, BANG = ord(":"), ord("="), ord("!")
+LBRACE, RBRACE = ord("{"), ord("}")
 
 
 def is_alpha(b):
@@ -80,6 +93,10 @@ def lex(data: bytes):
                 state, start, start_col = "NUMBER", i, col
             elif b == COLON:
                 state, start_col = "COLON", col
+            elif b == EQUALS:
+                state, start_col = "EQ", col
+            elif b == BANG:
+                state, start_col = "BANG", col
             elif b in SINGLE_BYTE:
                 kind, sub = SINGLE_BYTE[b]
                 token = Token(kind, chr(b), line, col, sub)
@@ -88,8 +105,6 @@ def lex(data: bytes):
                     open_braces.append(token)
                 elif b == RBRACE and open_braces:
                     open_braces.pop()        # a '}' with no '{' is the parser's problem
-            elif b == EQUALS:
-                raise CompileError(line, col, "unexpected byte '=': assignment is ':='")
             else:
                 raise CompileError(line, col, f"unexpected byte {show_byte(b)}")
 
@@ -121,6 +136,20 @@ def lex(data: bytes):
                 state = "START"
             else:
                 raise CompileError(line, start_col, "':' must be followed by '='")
+
+        elif state == "EQ":
+            if b == EQUALS:
+                tokens.append(Token("operator", "==", line, start_col, "eq"))
+                state = "START"
+            else:
+                raise CompileError(line, start_col, "expected '==' (a single '=' is not an operator)")
+
+        elif state == "BANG":
+            if b == EQUALS:
+                tokens.append(Token("operator", "!=", line, start_col, "ne"))
+                state = "START"
+            else:
+                raise CompileError(line, start_col, "expected '!=' (a single '!' is not an operator)")
 
         i += 1
         col += 1
