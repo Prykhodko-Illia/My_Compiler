@@ -67,6 +67,8 @@ class CodeGen:
         node.exit.accept(self)
 
     def visit_decl(self, node):
+        if node.type_name != "i32":        # TODO (Task 3): i64 allocas, i1 for bool, sext
+            raise error_at(node, f"type '{node.type_name}' is not supported by the code generator yet")
         if node.name in self.symbols:
             prev = self.symbols[node.name]
             raise error_at(node, f"variable '{node.name}' is already declared at line {prev.line}:{prev.col}")
@@ -94,6 +96,10 @@ class CodeGen:
         rhs = node.right.accept(self)
         op = {"+": self.builder.add, "-": self.builder.sub, "*": self.builder.mul}[node.op]
         return op(lhs, rhs)
+
+    def visit_bool(self, node):
+        # TODO (Task 3): a bool is an i1; comparisons become icmp.
+        raise error_at(node, "booleans are not supported by the code generator yet")
 
     def visit_var(self, node):
         return self.builder.load(self.lookup(node, node.name).ptr)

@@ -8,21 +8,26 @@ become flags -- "mut" is a boolean, the braces and ":=" leave nothing behind.
     Node
     +-- ProgramNode      statements: [StmtNode], exit: ExitNode
     +-- StmtNode   (abstract)
-    |   +-- DeclNode     name, mutable, init: ExprNode
+    |   +-- DeclNode     name, type_name, mutable, init: ExprNode
     |   +-- AssignNode   name, value: ExprNode
     +-- ExitNode         value: ExprNode
-    +-- ExprNode   (abstract)
-        +-- BinOpNode    op, left: ExprNode, right: ExprNode
-        +-- VarNode      name
+    +-- ExprNode   (abstract)      -- also carries `type`, filled in by the semantic pass
+        +-- BinOpNode    op ('+', '-', '*', '==', '!='), left, right: ExprNode
+        +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
+        +-- BoolNode     value (True / False)
         +-- ConstNode    value
 
 Every node keeps the line and column of the token it came from -- the name for a
-declaration or an assignment, the operator for an operation -- so the walk that emits
-the IR can say where 'x' is not mut without having any tokens left. The tree holds
-names, numbers, flags and child nodes: never a token.
+declaration or an assignment, the operator for an operation -- so the walks that come
+after the parser can say where 'x' is not mut without having any tokens left. The tree
+holds names, numbers, flags and child nodes: never a token.
+
+Two fields are written by the semantic pass and read by the code generator, which is
+their whole contract: `type` on every expression node ("i32", "i64" or "bool"), and
+`decl` on every VarNode and AssignNode (the DeclNode the name resolved to).
 
 `accept(visitor)` calls the visitor method for that node kind, so each walk over the
-tree (the code generator now, a semantic pass later) is its own class.
+tree (the semantic pass, then the code generator) is its own class.
 
 (Not named ast.py: that would shadow the standard library's `ast` module.)
 """
@@ -56,7 +61,11 @@ class StmtNode(Node):
 
 
 class ExprNode(Node):
-    """An expression: it produces a value."""
+    """An expression: it produces a value, whose type the semantic pass fills in."""
+
+    def __init__(self, line, col):
+        super().__init__(line, col)
+        self.type = None                  # "i32" | "i64" | "bool", set by the semantic pass
 
 
 class ProgramNode(Node):
@@ -76,14 +85,15 @@ class ProgramNode(Node):
 
 
 class DeclNode(StmtNode):
-    def __init__(self, line, col, name, mutable, init):
+    def __init__(self, line, col, name, type_name, mutable, init):
         super().__init__(line, col)       # position of the name
         self.name = name
+        self.type_name = type_name        # "i32" | "i64" | "bool", as written in the source
         self.mutable = mutable
         self.init = init                  # ExprNode
 
     def label(self):
-        return f"Decl {self.name} {'mut' if self.mutable else 'const'}"
+        return f"Decl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
     def children(self):
         return [self.init]
@@ -97,6 +107,7 @@ class AssignNode(StmtNode):
         super().__init__(line, col)       # position of the name
         self.name = name
         self.value = value                # ExprNode
+        self.decl = None                  # DeclNode, set by the semantic pass
 
     def label(self):
         return f"Assign {self.name}"
@@ -126,7 +137,7 @@ class ExitNode(Node):
 class BinOpNode(ExprNode):
     def __init__(self, line, col, op, left, right):
         super().__init__(line, col)       # position of the operator
-        self.op = op                      # '+', '-', '*'
+        self.op = op                      # '+', '-', '*', '==', '!='
         self.left = left                  # ExprNode
         self.right = right                # ExprNode
 
@@ -144,12 +155,25 @@ class VarNode(ExprNode):
     def __init__(self, line, col, name):
         super().__init__(line, col)
         self.name = name
+        self.decl = None                  # DeclNode, set by the semantic pass
 
     def label(self):
         return f"Var {self.name}"
 
     def accept(self, visitor):
         return visitor.visit_var(self)
+
+
+class BoolNode(ExprNode):
+    def __init__(self, line, col, value):
+        super().__init__(line, col)
+        self.value = value                # True | False
+
+    def label(self):
+        return f"Bool {'true' if self.value else 'false'}"
+
+    def accept(self, visitor):
+        return visitor.visit_bool(self)
 
 
 class ConstNode(ExprNode):
