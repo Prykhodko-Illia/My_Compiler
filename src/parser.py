@@ -27,8 +27,6 @@ from .ast_nodes import (AssignNode, BinOpNode, BoolNode, ConstNode, DeclNode,
                         ExitNode, ProgramNode, VarNode)
 from .errors import CompileError
 
-I32_MAX = 2**31 - 1
-
 
 def describe(token):
     if token is None:
@@ -166,9 +164,8 @@ class Parser:
         """factor ::= number | "true" | "false" | ident"""
         token = self.peek()
         if token is not None and token.kind == "constant":
-            # TODO (Task 2): the semantic pass decides a constant's type (i32, else i64).
-            if int(token.text) > I32_MAX:
-                raise self.error(f"constant {token.text} does not fit in i32 (max {I32_MAX})", token)
+            # How large a constant may be is a type question: the semantic pass decides,
+            # because the answer depends on the type it lands in.
             self.eat()
             return ConstNode(token.line, token.col, int(token.text))
         if self.at("keyword", "boolean"):

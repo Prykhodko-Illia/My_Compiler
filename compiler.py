@@ -11,6 +11,7 @@ from src.codegen import codegen
 from src.errors import CompileError
 from src.lexer import lex
 from src.parser import parse
+from src.semantic import check
 
 
 def report(e):
@@ -57,7 +58,9 @@ def main():
     src_path, out_path = args
     data = read_source(src_path)
     try:
-        module = codegen(parse(lex(data)))
+        # lex -> parse -> check (types, names) -> emit: nothing is built until the
+        # semantic pass has approved the whole tree.
+        module = codegen(check(parse(lex(data))))
     except CompileError as e:
         report(e)
 

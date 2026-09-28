@@ -1,37 +1,29 @@
-"""Phase 2: a walk over the AST that emits the IR  (semantic errors)
+"""Phase 3: a walk over the checked AST that emits the IR
 
-Nothing calls the builder until the whole tree stands; then this visitor walks it.
-One method per node kind: statement nodes return nothing, expression nodes return the
-value the builder produced for them, so an operation asks its children for their values
-first and then emits add, sub or mul -- operands before the operation, bottom-up.
+Nothing calls the builder until the whole tree stands and the semantic pass has approved
+it; then this visitor walks it. One method per node kind: statement nodes return nothing,
+expression nodes return the value the builder produced for them, so an operation asks its
+children for their values first and then emits add, sub or mul -- operands before the
+operation, bottom-up.
 
-The three semantic checks live here, as they always did: declared before use, declared
-once, and mut before ':='. Their positions now come from the nodes, not from tokens.
+There are no checks here any more. Declared before use, declared once, mut before ':='
+and every type rule live in src/semantic.py, which ran first; this walk trusts the tree
+and reads the two fields that pass left on it (`node.type` and `node.decl`).
 """
-
-from dataclasses import dataclass
 
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from .errors import CompileError, error_at
+from .errors import error_at
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
 
 
-@dataclass
-class Symbol:
-    ptr: object      # the alloca
-    mutable: bool
-    line: int        # where it was declared
-    col: int
-
-
 class CodeGen:
-    """Builds a module with a single main function from a ProgramNode."""
+    """Builds a module with a single main function from a checked ProgramNode."""
 
     def __init__(self):
-        self.module = ir.Module(name="practice3")
+        self.module = ir.Module(name="practice4")
         self.module.triple = llvm.get_default_triple()
 
         main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
@@ -48,16 +40,11 @@ class CodeGen:
         self.fmt.linkage, self.fmt.global_constant = "private", True
         self.fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
 
-        self.symbols = {}          # name -> Symbol
+        self.slots = {}            # name -> the alloca holding it
 
     def run(self, program):
         program.accept(self)
         return self.module
-
-    def lookup(self, node, name):
-        if name not in self.symbols:
-            raise error_at(node, f"variable '{name}' is used before its declaration")
-        return self.symbols[name]
 
     # -- statements: emit IR, return nothing --------------------------------
 
@@ -69,20 +56,13 @@ class CodeGen:
     def visit_decl(self, node):
         if node.type_name != "i32":        # TODO (Task 3): i64 allocas, i1 for bool, sext
             raise error_at(node, f"type '{node.type_name}' is not supported by the code generator yet")
-        if node.name in self.symbols:
-            prev = self.symbols[node.name]
-            raise error_at(node, f"variable '{node.name}' is already declared at line {prev.line}:{prev.col}")
-        # The initialiser is evaluated before the name exists, so `i32 t{t}` is an error.
         value = node.init.accept(self)
         ptr = self.builder.alloca(I32, name=node.name)
         self.builder.store(value, ptr)
-        self.symbols[node.name] = Symbol(ptr, node.mutable, node.line, node.col)
+        self.slots[node.name] = ptr
 
     def visit_assign(self, node):
-        symbol = self.lookup(node, node.name)
-        if not symbol.mutable:
-            raise error_at(node, f"cannot assign to '{node.name}': it is not mut")
-        self.builder.store(node.value.accept(self), symbol.ptr)
+        self.builder.store(node.value.accept(self), self.slots[node.name])
 
     def visit_exit(self, node):
         value = node.value.accept(self)
@@ -102,7 +82,7 @@ class CodeGen:
         raise error_at(node, "booleans are not supported by the code generator yet")
 
     def visit_var(self, node):
-        return self.builder.load(self.lookup(node, node.name).ptr)
+        return self.builder.load(self.slots[node.name])
 
     def visit_const(self, node):
         return ir.Constant(I32, node.value)
