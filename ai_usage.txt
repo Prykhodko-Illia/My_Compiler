@@ -1,63 +1,125 @@
-AI usage log - Practice 3 (a parser and an abstract syntax tree)
-===============================================================
+AI usage log - Practice 4 (types, comparisons and a semantic pass)
+=================================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
 Model:   Claude Opus 5 (claude-opus-5)
 Date:    2026-09-28
 Setup:   The AI ran commands on my Multipass VM (noble-compilers) with `multipass exec`,
          and edited files in ~/Study/compilers, which is mounted into the VM.
-         I made all git commits and pushes myself.
+         I created the practice-4 branch and made every commit and push myself.
 
-Below is every prompt I sent about Practice 3, quoted as written, followed by what the AI did.
+Below is every prompt I sent about Practice 4, quoted as written, followed by what the AI did.
 
 
 1. Prompt:
-   [attached w03-practice.pdf]
-   "now, we are going to do practice 3, full code is already in the main branch,
-   now only look on the practice and tell me what I should do and what is the point of the task:"
+   [attached w04-practice.pdf]
+   "now, you are going to do practice 4, here is the file. Again, starting from explanation of the
+   changes that is needed to be done here, so look and explain me every step in details"
 
    What the AI did:
-   Read the Practice 3 PDF without touching any code. Explained the point of the practice (put a
-   grammar and a tree between the lexer and code generation, so precedence in Task 4 costs nothing)
-   and listed the four tasks with their points. Compared the tasks against my Practice 2 code and
-   said which parts were already done and which had to change: nodes still held tokens, there was no
-   node hierarchy, no ProgramNode, no --ast, code generation was an isinstance loop instead of a walk,
-   and expressions allowed only one operation.
+   Read the PDF and wrote no code. Worked through the warm-up on paper (line 4, i32 d{a + b}, is the
+   first line that must be rejected, because a + b is i64 and an i64 never narrows), then explained
+   every change per task against my Practice 3 code: the new keywords and the two-byte operators in
+   the lexer, the new expr level above arith, DeclNode gaining a type and BoolNode being added, the
+   whole semantic pass with its error positions, and sext / icmp / select in the generator. Also
+   listed what would break: the constant check had to leave the parser, my .ast snapshots needed the
+   type inserted, and two existing tests would change meaning. Asked how I wanted the branch handled.
 
 
 2. Prompt:
-   "yes, check the repo and do everything"
+   "great, I created new branch from the practice-3 as I have to wait for the approving of my PR
+   and now let's do task by task
+   after doing you again explain me main differences with proiding some examples of what was before
+   and what you implemented now"
 
-   What the AI did:
-   Checked the repo (Practice 2 merged into main, clean tree, branch practice3) and read the existing
-   source. Then implemented all four tasks:
-   - Task 1: wrote grammar.ebnf with 8 EBNF rules, a note on which lexer token each terminal is, and
-     a note on what the grammar cannot say (the semantic checks).
-   - Task 2: rewrote src/ast_nodes.py as a class hierarchy (Node, StmtNode, ExprNode, ProgramNode,
-     DeclNode, AssignNode, ExitNode, BinOpNode, VarNode, ConstNode) where every node keeps its own
-     line and column and holds no tokens, with dump() and accept(visitor); rewrote src/parser.py as a
-     recursive-descent Parser with peek/eat and one method per grammar rule; added the --ast flag.
-   - Task 3: rewrote src/codegen.py as a CodeGen visitor with one method per node kind, keeping the
-     three semantic checks (declared before use, declared once, mut before :=) in the walk.
-   - Task 4: split the expression rules into expr / term / operand, so * binds tighter and operators
-     group left to right. Added tests for precedence, a chain with * in the middle, a left-associative
-     chain, an expression after :=, and the Task 4 program, plus parser errors for two operators in a
-     row, an operator at the end of a line and an operator right after {. Added three .ast files with
-     expected trees and taught run_tests.sh to check them.
-   Deleted the Practice 2 test err_two_operations, because chains are legal now, and reworded
-   err_extra_tokens.expected. Ran everything on the VM: 29 tests pass, the --ast dump for the
-   Practice 2 program matches the PDF line for line, and the Task 4 program prints 120 through both
-   lli and llc + clang. Also verified that parentheses, /, -5, exit x + 1 and two statements on one
-   line are still rejected, and that no regex, eval or parser generator is used anywhere.
-   Finally updated README.md (the --ast section, precedence, the error table, the file layout and the
-   explanation of each phase) and suggested one commit per task.
+   What the AI did (Task 1 - the front end):
+   Added i64, bool, true and false to the lexer's keyword table and two new states, EQ and BANG, each
+   accepting exactly one more byte, so == and != are tokens and a lone = or ! is a lexical error.
+   Split the grammar: the old expr became arith and a new expr sits above it with an optional
+   comparison, exit now takes a factor, and factor accepts true / false. Added type_name to DeclNode
+   and a BoolNode, so --ast prints "Decl y i64 mut" and "Bool true"; hand-edited the three .ast
+   snapshots to insert the type rather than regenerating them. Left two deliberate temporary things,
+   marked TODO: the constant check stayed in the parser, and the generator refused i64 / bool with a
+   clear message so nothing emitted wrong IR yet. Verified with --ast, the two lexical errors, and the
+   full test suite (29 passing). Then explained the before/after with examples.
 
 
 3. Prompt:
-   "committed, now update ai_usage.txt for practice 3.
-   remove previous ai_usage and add this session (only messages that refer to practice 3)"
+   "committed, let's do task 2"
+
+   What the AI did (Task 2 - the semantic pass):
+   Wrote src/semantic.py: a SemanticChecker walk with one visit per node kind that owns the symbol
+   table (name -> DeclNode), types every expression, stores node.type and node.decl on the tree, and
+   implements the type rules (constants take the narrowest type that fits, + - * need integers and
+   give the wider one, == != need two integers or two bools, i32 widens into i64 and nothing else
+   converts). Moved the three old checks out of the code generator, which now holds no checks at all
+   and only keeps a name -> alloca map. Removed the constant check from the parser, wired the pass
+   into compiler.py between parse and codegen, and added eight error programs, one per rule. Tested
+   the pass without LLVM at all by importing lex, parse and check directly: all eight rejected with
+   the right line:column, the same programs accepted once the offending line was fixed, and the
+   PDF's warm-up program rejected at line 4:5, exactly as predicted on paper. 36 tests passing.
+
+
+4. Prompt:
+   "committed, let's do task 3"
+
+   What the AI did (Task 3 - typed code generation):
+   Gave the generator real types: a type map (i32 -> i32, i64 -> i64, bool -> i1), allocas and
+   constants in the declared type, and a coerce() helper that emits sext i32 -> i64 at the five places
+   the checker allows widening. Comparisons became icmp with a signed predicate after widening both
+   sides; exit now widens an integer to i64 and prints it with %lld, or picks between two string
+   constants with a select and prints a bool with %s. Removed both temporary scaffolds from Tasks 1
+   and 2. Restructured the tests into tests/ok and tests/err, named after features, and taught
+   run_tests.sh that the folder itself is part of the expectation. Added ten valid programs (widening
+   in an initialiser and inside +, an i64-only constant, a negative i64, comparisons across widths and
+   between bools, a bool exit, a bool mut assignment, comparison of two chains, the Task 1 program)
+   and two lexical error programs. Verified 385 through lli and through llc + clang, "false" for a
+   bool exit, and the sext / icmp / select lines in the IR. 48 tests passing. Finally updated
+   README.md for three types, the four-phase pipeline, the new test layout and the error table.
+
+
+5. Prompt:
+   "committed, now update ai_usage.txt for practice 4"
 
    What the AI did:
-   Confirmed that the four Practice 3 commits landed and that the branch is now named practice-3.
-   Replaced the Practice 2 log in this file with this one. The Practice 2 log is still in git history,
-   in the practice-2 branch and in main.
+   Replaced the Practice 3 log in this file with this one. The Practice 3 log is still in git history,
+   on the practice-3 branch.
+
+
+6. Prompt:
+   [I pasted three review findings about the code, numbered 3 to 5:]
+   "3. The generator still looks variables up by name. [...] The fix is three lines: key `slots` by the
+   declaration node [...]
+   4. The docstring in `compiler.py:5` still describes the pipeline without the semantic pass.
+   5. The type check in `visit_exit` (src/semantic.py:82) can never fail [...] harmless dead code."
+
+   What the AI did:
+   Read the three places first and confirmed every finding was real, then fixed them. The generator's
+   slots map is now keyed by the DeclNode instead of by the name, so visit_var and visit_assign use
+   node.decl and the generator looks nothing up -- which matters from Practice 5 on, when two variables
+   in different scopes may share a name. The compiler.py docstring now shows all four phases, and the
+   dead type check in visit_exit was replaced by a comment explaining why nothing can be rejected
+   there. Re-ran the suite (48 passing) and confirmed 385 and "false" were unchanged.
+
+
+7. Prompt:
+   "committed, now update ai_usage.txt with these fixes"
+
+   What the AI did:
+   Added entries 6 and 7 to this file.
+
+
+What I took as-is, and what I changed
+-------------------------------------
+Taken as-is: all of src/lexer.py, src/parser.py, src/ast_nodes.py, src/semantic.py, src/codegen.py,
+the tests under tests/ok and tests/err, run_tests.sh and README.md, as produced in the three steps
+above. I read each task's diff before committing it, and committed one task per commit.
+
+Changed by me: the branch layout (I created practice-4 from practice-3 myself, because the Practice 3
+pull request is still waiting for review) and all git operations. I also had the code reviewed and
+brought three findings back to be fixed (entry 6): the name-keyed lookup in the generator, the stale
+docstring, and the dead check in visit_exit. I made no hand edits to the generated code myself; if I
+change something later, it goes here.
+
+Checked by me: the test runner output (48 passing, re-run after the fixes of entry 6), the --ast dump
+for the Task 1 program, 385 through lli, and the rejected programs with their line:column.
