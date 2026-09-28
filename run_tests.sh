@@ -2,6 +2,7 @@
 # Runs every tests/*.txt through the compiler and compares the result with tests/*.expected:
 #   - if the compiler succeeds, the program's output (via lli) must match;
 #   - if it fails, its stderr must match, and no output file may be written.
+# When a tests/NAME.ast file exists, the --ast dump must match it too.
 # Usage (with the llvmlite venv active):  ./run_tests.sh
 
 cd "$(dirname "$0")" || exit 2
@@ -22,15 +23,31 @@ for src in tests/*.txt; do
         actual=$(cat "$tmp/stderr")
     fi
 
-    if [ -f "$name.expected" ] && [ "$actual" == "$(cat "$name.expected")" ]; then
-        passed=$((passed + 1))
-        echo "PASS  $name"
-    else
+    if [ ! -f "$name.expected" ]; then
         failed=$((failed + 1))
         echo "FAIL  $name"
-        echo "      expected: $(cat "$name.expected" 2>/dev/null || echo '(no .expected file)')"
-        echo "      actual:   $actual"
+        echo "      no .expected file"
+        continue
     fi
+
+    if [ "$actual" != "$(cat "$name.expected")" ]; then
+        failed=$((failed + 1))
+        echo "FAIL  $name"
+        echo "      expected: $(cat "$name.expected")"
+        echo "      actual:   $actual"
+        continue
+    fi
+
+    if [ -f "$name.ast" ] && [ "$(python3 compiler.py --ast "$src" 2>&1)" != "$(cat "$name.ast")" ]; then
+        failed=$((failed + 1))
+        echo "FAIL  $name"
+        echo "      the --ast dump differs from $name.ast:"
+        diff <(python3 compiler.py --ast "$src" 2>&1) "$name.ast" | sed 's/^/      /'
+        continue
+    fi
+
+    passed=$((passed + 1))
+    echo "PASS  $name"
 done
 
 echo
