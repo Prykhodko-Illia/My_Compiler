@@ -2,7 +2,8 @@ AI usage log - Practice 4 (types, comparisons and a semantic pass)
 =================================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
-Model:   Claude Opus 5 (claude-opus-5)
+Model:   Claude Opus 5 (claude-opus-5) in the main session (prompts 1-5, 7, 9);
+         Claude Opus 5.5 (claude-opus-5-5) in a separate review session (prompts 6, 8, 10)
 Date:    2026-09-28
 Setup:   The AI ran commands on my Multipass VM (noble-compilers) with `multipass exec`,
          and edited files in ~/Study/compilers, which is mounted into the VM.
@@ -86,7 +87,23 @@ Below is every prompt I sent about Practice 4, quoted as written, followed by wh
    on the practice-3 branch.
 
 
-6. Prompt:
+6. Prompt (review session):
+   [attached w04-practice.pdf]
+   "now, check updated task 4"
+
+   What the AI did:
+   Read the Practice 4 PDF and the three practice-4 commits, ran the test runner in the VM
+   (48 passing) and about 30 extra programs covering every example in the PDF. Reported every
+   requirement as met, with the exact line:column for each PDF error, 385 and true through lli,
+   and the sext / icmp / select lines in the IR. Flagged the remaining issues: ai_usage.txt still held
+   the Practice 3 log; practice-4 was not pushed and had no pull request; the generator still looked
+   variables up by name (self.slots[node.name]) instead of reading node.decl, which the PDF forbids
+   and which would break once Practice 5 adds scopes; and two cosmetic points (the compiler.py
+   docstring left out the semantic pass, and the type check in visit_exit could never fail).
+   Made no changes to the code.
+
+
+7. Prompt (main session):
    [I pasted three review findings about the code, numbered 3 to 5:]
    "3. The generator still looks variables up by name. [...] The fix is three lines: key `slots` by the
    declaration node [...]
@@ -102,11 +119,31 @@ Below is every prompt I sent about Practice 4, quoted as written, followed by wh
    there. Re-ran the suite (48 passing) and confirmed 385 and "false" were unchanged.
 
 
-7. Prompt:
+8. Prompt (review session):
+   "check again"
+
+   What the AI did:
+   Read the fixes from entry 7, still uncommitted at that point, and reran the test runner in the VM
+   (48 passing) and the key programs (385, true for exit e, 70 for Practice 2, 120 for Practice 3).
+   Confirmed all three code fixes and the new log. Pointed out what was left: commit the changes,
+   push practice-4 and open the pull request into main with vovaskochko as reviewer, and record the
+   review and the fixes in this file. Made no changes to the code.
+
+
+9. Prompt (main session):
    "committed, now update ai_usage.txt with these fixes"
 
    What the AI did:
-   Added entries 6 and 7 to this file.
+   Added the entry for the fixes (entry 7) and for this prompt to this file.
+
+
+10. Prompt (review session):
+   "add prompts to ai_usage.txt"
+
+   What the AI did:
+   Added the review-session prompts (entries 6, 8 and 10) to this file, merged them with the entries
+   the main session had added in between so the log reads in the order things happened, and noted
+   which model ran which session. Touched no other file.
 
 
 What I took as-is, and what I changed
@@ -116,10 +153,10 @@ the tests under tests/ok and tests/err, run_tests.sh and README.md, as produced 
 above. I read each task's diff before committing it, and committed one task per commit.
 
 Changed by me: the branch layout (I created practice-4 from practice-3 myself, because the Practice 3
-pull request is still waiting for review) and all git operations. I also had the code reviewed and
-brought three findings back to be fixed (entry 6): the name-keyed lookup in the generator, the stale
-docstring, and the dead check in visit_exit. I made no hand edits to the generated code myself; if I
-change something later, it goes here.
+pull request is still waiting for review) and all git operations. I also had the code reviewed in a
+separate session (entry 6) and brought three findings back to be fixed (entry 7): the name-keyed
+lookup in the generator, the stale docstring, and the dead check in visit_exit. I made no hand edits
+to the generated code myself; if I change something later, it goes here.
 
-Checked by me: the test runner output (48 passing, re-run after the fixes of entry 6), the --ast dump
+Checked by me: the test runner output (48 passing, re-run after the fixes of entry 7), the --ast dump
 for the Task 1 program, 385 through lli, and the rejected programs with their line:column.
