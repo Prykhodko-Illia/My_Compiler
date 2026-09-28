@@ -1,13 +1,20 @@
-"""Phase 2: AST -> IR  (semantic errors: declaration before use, mut)"""
+"""Phase 2: a walk over the AST that emits the IR  (semantic errors)
+
+Nothing calls the builder until the whole tree stands; then this visitor walks it.
+One method per node kind: statement nodes return nothing, expression nodes return the
+value the builder produced for them, so an operation asks its children for their values
+first and then emits add, sub or mul -- operands before the operation, bottom-up.
+
+The three semantic checks live here, as they always did: declared before use, declared
+once, and mut before ':='. Their positions now come from the nodes, not from tokens.
+"""
 
 from dataclasses import dataclass
 
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from .ast_nodes import Assign, BinOp, Const, Declare, Exit
 from .errors import CompileError, error_at
-from .lexer import Token
 
 I32, I8 = ir.IntType(32), ir.IntType(8)
 
@@ -16,80 +23,84 @@ I32, I8 = ir.IntType(32), ir.IntType(8)
 class Symbol:
     ptr: object      # the alloca
     mutable: bool
-    declared: Token
+    line: int        # where it was declared
+    col: int
 
 
-def lookup(symbols, token):
-    if token.text not in symbols:
-        raise error_at(token, f"variable '{token.text}' is used before its declaration")
-    return symbols[token.text]
+class CodeGen:
+    """Builds a module with a single main function from a ProgramNode."""
 
+    def __init__(self):
+        self.module = ir.Module(name="practice3")
+        self.module.triple = llvm.get_default_triple()
 
-def emit_operand(builder, symbols, node):
-    """Turn a Const or Var into an IR value."""
-    if isinstance(node, Const):
-        return ir.Constant(I32, node.value)
-    return builder.load(lookup(symbols, node.token).ptr)
+        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.builder = ir.IRBuilder(main.append_basic_block("entry"))
 
+        self.printf = ir.Function(
+            self.module,
+            ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
+            name="printf",
+        )
 
-def emit_expr(builder, symbols, expr):
-    if isinstance(expr, BinOp):
-        lhs = emit_operand(builder, symbols, expr.left)
-        rhs = emit_operand(builder, symbols, expr.right)
-        op = {"+": builder.add, "-": builder.sub, "*": builder.mul}[expr.op]
+        text = b"Program exit with result %d\n\0"
+        self.fmt = ir.GlobalVariable(self.module, ir.ArrayType(I8, len(text)), name="fmt")
+        self.fmt.linkage, self.fmt.global_constant = "private", True
+        self.fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
+
+        self.symbols = {}          # name -> Symbol
+
+    def run(self, program):
+        program.accept(self)
+        return self.module
+
+    def lookup(self, node, name):
+        if name not in self.symbols:
+            raise error_at(node, f"variable '{name}' is used before its declaration")
+        return self.symbols[name]
+
+    # -- statements: emit IR, return nothing --------------------------------
+
+    def visit_program(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        node.exit.accept(self)
+
+    def visit_decl(self, node):
+        if node.name in self.symbols:
+            prev = self.symbols[node.name]
+            raise error_at(node, f"variable '{node.name}' is already declared at line {prev.line}:{prev.col}")
+        # The initialiser is evaluated before the name exists, so `i32 t{t}` is an error.
+        value = node.init.accept(self)
+        ptr = self.builder.alloca(I32, name=node.name)
+        self.builder.store(value, ptr)
+        self.symbols[node.name] = Symbol(ptr, node.mutable, node.line, node.col)
+
+    def visit_assign(self, node):
+        symbol = self.lookup(node, node.name)
+        if not symbol.mutable:
+            raise error_at(node, f"cannot assign to '{node.name}': it is not mut")
+        self.builder.store(node.value.accept(self), symbol.ptr)
+
+    def visit_exit(self, node):
+        value = node.value.accept(self)
+        self.builder.call(self.printf, [self.builder.bitcast(self.fmt, ir.PointerType(I8)), value])
+        self.builder.ret(ir.Constant(I32, 0))
+
+    # -- expressions: return the value the builder produced -----------------
+
+    def visit_binop(self, node):
+        lhs = node.left.accept(self)
+        rhs = node.right.accept(self)
+        op = {"+": self.builder.add, "-": self.builder.sub, "*": self.builder.mul}[node.op]
         return op(lhs, rhs)
-    return emit_operand(builder, symbols, expr)
+
+    def visit_var(self, node):
+        return self.builder.load(self.lookup(node, node.name).ptr)
+
+    def visit_const(self, node):
+        return ir.Constant(I32, node.value)
 
 
-def codegen(stmts, end):
-    module = ir.Module(name="practice2")
-    module.triple = llvm.get_default_triple()
-
-    main = ir.Function(module, ir.FunctionType(I32, []), name="main")
-    builder = ir.IRBuilder(main.append_basic_block("entry"))
-
-    printf = ir.Function(
-        module,
-        ir.FunctionType(I32, [ir.PointerType(I8)], var_arg=True),
-        name="printf",
-    )
-
-    text = b"Program exit with result %d\n\0"
-    fmt = ir.GlobalVariable(module, ir.ArrayType(I8, len(text)), name="fmt")
-    fmt.linkage, fmt.global_constant = "private", True
-    fmt.initializer = ir.Constant(ir.ArrayType(I8, len(text)), bytearray(text))
-
-    symbols = {}          # name -> Symbol
-    seen_exit = False
-
-    for stmt in stmts:
-        if seen_exit:
-            raise error_at(stmt.first, "'exit' must be the last statement")
-
-        if isinstance(stmt, Declare):
-            name = stmt.name.text
-            if name in symbols:
-                prev = symbols[name].declared
-                raise error_at(stmt.name, f"variable '{name}' is already declared at line {prev.line}:{prev.col}")
-            # The initialiser is evaluated before the name exists, so `i32 t{t}` is an error.
-            value = emit_expr(builder, symbols, stmt.init)
-            ptr = builder.alloca(I32, name=name)
-            builder.store(value, ptr)
-            symbols[name] = Symbol(ptr, stmt.mutable, stmt.name)
-
-        elif isinstance(stmt, Assign):
-            symbol = lookup(symbols, stmt.target)
-            if not symbol.mutable:
-                raise error_at(stmt.target, f"cannot assign to '{stmt.target.text}': it is not mut")
-            builder.store(emit_expr(builder, symbols, stmt.expr), symbol.ptr)
-
-        elif isinstance(stmt, Exit):
-            value = emit_operand(builder, symbols, stmt.operand)
-            builder.call(printf, [builder.bitcast(fmt, ir.PointerType(I8)), value])
-            builder.ret(ir.Constant(I32, 0))
-            seen_exit = True
-
-    if not seen_exit:
-        raise CompileError(*end, "program has no exit statement")
-
-    return module
+def codegen(program):
+    return CodeGen().run(program)
