@@ -1,0 +1,49 @@
+(* Grammar of the language, in EBNF.
+ *
+ * Notation:  name ::= right side      a rule
+ *            |                        alternatives
+ *            [ x ]                    optional
+ *            { x }                    zero or more
+ *            "x"                      a terminal: a token the lexer emits, with this text
+ *            name                     a non-terminal: it has a rule of its own
+ *
+ * Terminals come straight from the lexer (src/lexer.py):
+ *   "i32" "mut" "exit"    keyword tokens
+ *   "{" "}"               block tokens
+ *   ":=" "+" "-" "*"      operator tokens
+ *   ident                 identifier token: letters, digits and _, not starting with a
+ *                         digit, and not a keyword -- how it is spelled is the lexer's rule
+ *   number                constant token: decimal digits, no sign
+ *
+ * One statement per line. The lexer ends every line with an endline token, which is what
+ * tells the parser a statement is over; blank lines carry no statement and are skipped.
+ *
+ * What this grammar deliberately cannot say (those are semantics, checked while walking
+ * the tree in src/codegen.py): that a variable was declared before it is used, that it was
+ * declared only once, and that it is "mut" before it is assigned.
+ *)
+
+program   ::= { statement } exit
+
+statement ::= decl | assign
+
+decl      ::= "i32" [ "mut" ] ident "{" expr "}"
+
+assign    ::= ident ":=" expr
+
+exit      ::= "exit" operand
+
+expr      ::= term { ( "+" | "-" ) term }
+
+term      ::= operand { "*" operand }
+
+operand   ::= number | ident
+
+(* Precedence and associativity come out of the shape of the last three rules:
+ * expr calls term before it looks for a "+", so everything a "*" glues together is
+ * already one node when the "+" is seen -- that is precedence. Each loop builds the new
+ * node with what it has so far as the left child, so 10 - 3 - 2 parses as (10 - 3) - 2
+ * -- that is left associativity. There are no parentheses in the language yet.
+ *
+ * Note that exit takes an operand, not an expr: a single constant or variable.
+ *)
