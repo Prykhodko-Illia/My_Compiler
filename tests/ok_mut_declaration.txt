@@ -1,0 +1,7 @@
+i32 x{5}
+i32 mut total{x}
+total := total + 4
+total := total * 3
+total := x
+total := total - 1
+exit total

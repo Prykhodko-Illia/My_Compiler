@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build outputs
+*.ll
+*.o
+program
+a.out
+
+# macOS
+.DS_Store
