@@ -51,7 +51,9 @@ class CodeGen:
         self.word_true = self.global_string("word_true", b"true\0")
         self.word_false = self.global_string("word_false", b"false\0")
 
-        self.slots = {}            # name -> the alloca holding it
+        # Keyed by the DeclNode, not by the name: from Practice 5 on, two variables in
+        # different scopes may share a name, and the tree already says which one is meant.
+        self.slots = {}            # DeclNode -> the alloca holding that variable
 
     def global_string(self, name, text):
         array = ir.ArrayType(I8, len(text))
@@ -81,12 +83,12 @@ class CodeGen:
         value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
         ptr = self.builder.alloca(LLVM_TYPE[node.type_name], name=node.name)
         self.builder.store(value, ptr)
-        self.slots[node.name] = ptr
+        self.slots[node] = ptr
 
     def visit_assign(self, node):
         want = node.decl.type_name
         value = self.coerce(node.value.accept(self), node.value.type, want)
-        self.builder.store(value, self.slots[node.name])
+        self.builder.store(value, self.slots[node.decl])
 
     def visit_exit(self, node):
         value = node.value.accept(self)
@@ -121,7 +123,7 @@ class CodeGen:
         return self.builder.icmp_signed(node.op, lhs, rhs, name="cmp")
 
     def visit_var(self, node):
-        return self.builder.load(self.slots[node.name])
+        return self.builder.load(self.slots[node.decl])
 
     def visit_bool(self, node):
         return ir.Constant(I1, 1 if node.value else 0)

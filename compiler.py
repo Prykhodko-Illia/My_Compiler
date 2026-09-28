@@ -2,7 +2,10 @@
           or:  python3 compiler.py --ast <source>
           or:  python3 compiler.py --tokens <source>
 
-source bytes --lexer--> tokens --parser--> AST --walk (codegen)--> str(module) -> output.ll
+source bytes --lexer--> tokens --parser--> AST --semantic pass--> typed AST
+            --walk (codegen)--> str(module) -> output.ll
+
+Nothing is built until the semantic pass has approved the whole tree.
 """
 
 import sys

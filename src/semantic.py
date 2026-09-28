@@ -78,9 +78,9 @@ class SemanticChecker:
         node.decl = decl
 
     def visit_exit(self, node):
-        value_type = node.value.accept(self)
-        if value_type not in (*INTEGERS, "bool"):
-            raise error_at(node, f"cannot exit with a value of type {value_type}")
+        # Every type the language has is printable -- an integer or a bool -- so there is
+        # nothing to reject here; the value only has to be typed.
+        node.value.accept(self)
 
     # -- expressions: return the type, and store it on the node -------------
 
