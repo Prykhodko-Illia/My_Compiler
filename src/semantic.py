@@ -77,6 +77,10 @@ class SemanticChecker:
         self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
         node.decl = decl
 
+    # TODO(Practice 5, Task 2): a scope frame per block, a bool condition, a bool under '!'.
+    def visit_if(self, node):
+        raise error_at(node, "'if' is not supported by the semantic pass yet")
+
     def visit_exit(self, node):
         # Every type the language has is printable -- an integer or a bool -- so there is
         # nothing to reject here; the value only has to be typed.
@@ -96,6 +100,9 @@ class SemanticChecker:
                 raise error_at(node, f"cannot compare {left} with {right}")
             node.type = "bool"
         return node.type
+
+    def visit_not(self, node):            # TODO(Practice 5, Task 2)
+        raise error_at(node, "'!' is not supported by the semantic pass yet")
 
     def visit_var(self, node):
         node.decl = self.lookup(node, node.name)

@@ -1,0 +1,3 @@
+if true
+{
+exit 1

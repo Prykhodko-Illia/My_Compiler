@@ -1,0 +1,5 @@
+bool b{true}
+if b {
+a := 2
+}
+exit 1
