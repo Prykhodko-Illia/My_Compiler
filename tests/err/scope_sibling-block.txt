@@ -1,0 +1,9 @@
+if true
+{
+    i32 a{1}
+}
+else
+{
+    exit a
+}
+exit 0

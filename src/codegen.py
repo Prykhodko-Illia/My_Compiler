@@ -19,6 +19,7 @@ assignment, the operands of + - *, the operands of == !=, and the exit value.
 from llvmlite import ir
 import llvmlite.binding as llvm
 
+from .errors import CompileError
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
@@ -90,6 +91,10 @@ class CodeGen:
         value = self.coerce(node.value.accept(self), node.value.type, want)
         self.builder.store(value, self.slots[node.decl])
 
+    # TODO(Practice 5, Task 3): then / else / merge blocks, entry-block slots, '!'.
+    def visit_if(self, node):
+        raise CompileError(node.line, node.col, "'if' is not supported by the code generator yet")
+
     def visit_exit(self, node):
         value = node.value.accept(self)
         if node.value.type == "bool":
@@ -121,6 +126,9 @@ class CodeGen:
             lhs = self.coerce(lhs, node.left.type, width)
             rhs = self.coerce(rhs, node.right.type, width)
         return self.builder.icmp_signed(node.op, lhs, rhs, name="cmp")
+
+    def visit_not(self, node):            # TODO(Practice 5, Task 3)
+        raise CompileError(node.line, node.col, "'!' is not supported by the code generator yet")
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])

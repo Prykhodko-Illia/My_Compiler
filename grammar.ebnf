@@ -29,8 +29,10 @@
  *
  * What this grammar deliberately cannot say (those are semantics, checked by the pass in
  * src/semantic.py): that a variable was declared before it is used, that it was declared
- * only once, that it is "mut" before it is assigned, and every type rule -- that "+" takes
- * two integers, that a comparison gives a bool, that an i32 may widen into an i64.
+ * only once in its block, which declaration a name means when a block shadows it, that it
+ * is "mut" before it is assigned, and every type rule -- that "+" takes two integers, that
+ * a comparison gives a bool, that an i32 may widen into an i64, that the condition of an
+ * if and the operand of "!" are bools.
  *)
 
 program   ::= { statement } exit

@@ -1,1 +1,1 @@
-compilation error: line 2:9: variable 'x' is already declared at line 1:5
+compilation error: line 2:9: variable 'x' is already declared in this block
