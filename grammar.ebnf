@@ -10,7 +10,7 @@
  * Terminals come straight from the lexer (src/lexer.py):
  *   "i32" "i64" "bool"    keyword tokens: the type names
  *   "mut" "exit"          keyword tokens
- *   "if" "else"           keyword tokens
+ *   "if" "else" "while"   keyword tokens
  *   "true" "false"        keyword tokens: the boolean literals
  *   "{" "}"               block tokens
  *   ":=" "+" "-" "*"      operator tokens
@@ -24,7 +24,7 @@
  *
  * One line per declaration, assignment and exit. An if takes several: the condition
  * line, then "{", every line of the block and "}" each on a line of their own, and the
- * same again after an "else". NL is written out wherever a line must end; blank lines
+ * same again after an "else". A while takes the same shape, without the else. NL is written out wherever a line must end; blank lines
  * carry nothing and are skipped. The lexer does not pair the braces -- this grammar does.
  *
  * What this grammar deliberately cannot say (those are semantics, checked by the pass in
@@ -32,12 +32,12 @@
  * only once in its block, which declaration a name means when a block shadows it, that it
  * is "mut" before it is assigned, and every type rule -- that "+" takes two integers, that
  * a comparison gives a bool, that an i32 may widen into an i64, that the condition of an
- * if and the operand of "!" are bools.
+ * if or a while and the operand of "!" are bools.
  *)
 
 program   ::= { statement } exit
 
-statement ::= decl | assign | if
+statement ::= decl | assign | if | while
 
 decl      ::= type [ "mut" ] ident "{" expr "}"
 
@@ -46,6 +46,8 @@ type      ::= "i32" | "i64" | "bool"
 assign    ::= ident ":=" expr
 
 if        ::= "if" expr NL block [ "else" NL block ]
+
+while     ::= "while" expr NL block
 
 block     ::= "{" NL { statement } [ exit NL ] "}" NL
 

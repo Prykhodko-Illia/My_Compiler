@@ -3,11 +3,12 @@
 Recursive descent, written by hand: one method per rule of grammar.ebnf.
 
   program   ::= { statement } exit
-  statement ::= decl | assign | if
+  statement ::= decl | assign | if | while
   decl      ::= type [ "mut" ] ident "{" expr "}"
   type      ::= "i32" | "i64" | "bool"
   assign    ::= ident ":=" expr
   if        ::= "if" expr NL block [ "else" NL block ]
+  while     ::= "while" expr NL block
   block     ::= "{" NL { statement } [ exit NL ] "}" NL       (not empty)
   exit      ::= "exit" factor
   expr      ::= arith [ ( "==" | "!=" ) arith ]
@@ -25,14 +26,16 @@ first token of the next non-blank line, next_line() makes that line the current 
 The token cursor walks the current line: peek() returns its current token, or None at
 the end of the line; eat() returns it and moves on. A declaration, an assignment and
 an exit are one line each; an if is several -- its condition line, the '{' line, every
-line of the block, the '}' line, and the same again for an else.
+line of the block, the '}' line, and the same again for an else. A while is the same
+shape as an if without the else.
 
 One token of look-ahead decides every choice: the parser never scans ahead through a
 line. It reads tokens only, never the source text, and puts no token into the tree.
 """
 
 from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, ConstNode,
-                        DeclNode, ExitNode, IfNode, NotNode, ProgramNode, VarNode)
+                        DeclNode, ExitNode, IfNode, NotNode, ProgramNode, VarNode,
+                        WhileNode)
 from .errors import CompileError
 
 
@@ -130,9 +133,11 @@ class Parser:
                 statements.append(self.parse_statement())
 
     def parse_statement(self):
-        """statement ::= decl | assign | if"""
+        """statement ::= decl | assign | if | while"""
         if self.at("keyword", "branch", "if"):
             return self.parse_if()                             # it reads its own lines
+        if self.at("keyword", "loop"):
+            return self.parse_while()                          # so does a while
         if self.at("keyword", "typename"):
             node = self.parse_decl()
         elif self.at("identifier"):
@@ -140,11 +145,11 @@ class Parser:
         elif self.at("keyword", "branch", "else"):
             raise self.error("'else' without an 'if'")
         elif self.at("block", "start"):
-            raise self.error("a block must follow an 'if' or an 'else'")
+            raise self.error("a block must follow an 'if', an 'else' or a 'while'")
         elif self.at("block", "end"):
             raise self.error("'}' without a '{'")
         else:
-            raise self.error(f"a statement must start with a type name, 'if', 'exit' or a variable, found {describe(self.peek())}")
+            raise self.error(f"a statement must start with a type name, 'if', 'while', 'exit' or a variable, found {describe(self.peek())}")
         self.end_line("the statement")
         return node
 
@@ -181,6 +186,13 @@ class Parser:
             self.end_line("'else'")
             else_block = self.parse_block("'else'")
         return IfNode(keyword.line, keyword.col, condition, then_block, else_block)
+
+    def parse_while(self):
+        """while ::= "while" expr NL block"""
+        keyword = self.eat()
+        condition = self.parse_expr()
+        self.end_line("the statement")                         # while b {  -- same rule as if
+        return WhileNode(keyword.line, keyword.col, condition, self.parse_block("'while'"))
 
     def parse_block(self, owner):
         """block ::= "{" NL { statement } [ exit NL ] "}" NL   -- at least one line inside"""

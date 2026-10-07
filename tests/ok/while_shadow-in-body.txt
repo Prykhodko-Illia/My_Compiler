@@ -1,0 +1,12 @@
+i32 mut i{0}
+bool mut even{true}
+while i != 5
+{
+    bool even{!even}
+    i := i + 1
+}
+while !even
+{
+    even := true
+}
+exit even

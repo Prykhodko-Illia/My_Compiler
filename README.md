@@ -19,7 +19,7 @@ tree and throws it out if it lies, and only then does one last walk emit LLVM IR
 source bytes ──lexer──► tokens ──parser──► AST ──semantic pass──► typed AST ──walk (IRBuilder)──► output.ll ──llc + clang──► program
 ```
 
-Since Practice 5 the language branches: `if` / `else` with blocks, and `!`. A block of the source is a **scope** in the
+Since Practice 5 the language branches and loops: `if` / `else` and `while` with blocks, and `!`. A block of the source is a **scope** in the
 semantic pass and a run of **basic blocks** in the IR — two different things, kept apart on purpose.
 
 The grammar the parser follows is written down in [`grammar.ebnf`](grammar.ebnf).
@@ -175,21 +175,23 @@ boolean whose only literals are `true` and `false`. That's the whole language, c
 | mut declaration | `i64 mut y{10}` | declares `y`, which can be reassigned; `mut` comes after the type name |
 | assignment | `y := x * 3 + 1` | only a `mut` variable may be assigned |
 | if / else | see below | runs the first block when the `bool` condition is true, else the second; `else` is optional |
+| while | see below | runs the block again and again while the `bool` condition is true |
 | exit | `exit y` · `exit 42` · `exit !b` | prints `Program exit with result <value>` and ends the program; it is the last line of its block, and the program ends with one |
 
 ```
-if b
-{
-    a := a + 5
-}
-else
+if b                        while i != 11
+{                           {
+    a := a + 5                  sum := sum + i
+}                               i := i + 1
+else                        }
 {
     a := a - 5
 }
 ```
 
-- `if` and its condition stand on one line; `{`, `}` and `else` stand alone on theirs. A block holds at least one line.
-- Blocks nest: an `if` is a statement, so it may stand inside a block.
+- `if` / `while` and the condition stand on one line; `{`, `}` and `else` stand alone on theirs. A block holds at
+  least one line.
+- Blocks nest: an `if` and a `while` are statements, so they may stand inside a block.
 - A block may end with `exit`, as its last line. The program still ends with an `exit` of its own.
 - A block is a scope. A name declared inside is gone after the `}`, and a block may declare a name that already
   exists outside it, with any type — that's shadowing. A name means the innermost declaration of it.
@@ -204,7 +206,7 @@ The rules:
   One comparison per expression.
 - `!` negates a `bool` and binds tighter than everything: it applies to the factor right after it, so `!a == b`
   compares `!a` with `b`. Spaces after `!` are optional.
-- The condition of an `if` is a `bool`.
+- The condition of an `if` or a `while` is a `bool`.
 - Arithmetic works on integers only, and the result takes the wider of the two types: `i32 + i64` is `i64`.
 - `==` and `!=` compare two integers (any mix of widths) or two bools.
 - **An `i32` value may go into an `i64` variable, and nothing else converts**: an `i64` never goes back into an
@@ -213,13 +215,14 @@ The rules:
   `9223372036854775807` is an error.
 - `exit` takes a single constant or variable — an integer or a bool, optionally under `!` — never an operation.
 - Names are ASCII letters, digits and `_`, and can't start with a digit. `i32`, `i64`, `bool`, `mut`, `exit`,
-  `if`, `else`, `true` and `false` are reserved.
+  `if`, `else`, `while`, `true` and `false` are reserved.
 - A variable is declared once per block, before its first use, and can't appear in its own initialiser
   (in a block that shadows it, the initialiser reads the outer one).
 - Spaces and tabs separate tokens and are optional around `{`, `}`, `:=` and the operators. Blank lines are ignored.
 - Not in the language, so each of these is a compilation error: parentheses; `/`, `<`, `>` or any operator other
   than `+ - * == != !`; a lone `=`; a sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`);
-  two comparisons in one expression; two statements on one line; a declaration without `{}`; `{` on the `if` line;
+  two comparisons in one expression; two statements on one line; a declaration without `{}`; `{` on the `if` or
+  `while` line;
   an empty block; anything after an `exit` in its block.
 
 Example:
@@ -259,8 +262,8 @@ have been typed.
 | Caught by | What gets you caught |
 |---|---|
 | lexer | an unknown byte (anything outside the language, including `(`, `/`, `<`, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=` |
-| parser | a line that isn't a declaration, an assignment, an `if` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` line; no `{` line after `if` or `else`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, a condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut` |
+| parser | a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut` |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -273,7 +276,7 @@ grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
   lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON, EQ, BANG)
   parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
-  ast_nodes.py      the tree: Node, ProgramNode, DeclNode, AssignNode, IfNode, BlockNode, ExitNode,
+  ast_nodes.py      the tree: Node, ProgramNode, DeclNode, AssignNode, IfNode, WhileNode, BlockNode, ExitNode,
                     BinOpNode, NotNode, VarNode, BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, types every expression and rejects the rest
   codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — basic blocks, cbranch, sext, icmp, select
@@ -295,8 +298,8 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
 2. **Parser** (`src/parser.py`): recursive descent, by hand, with two cursors. The line cursor walks the source:
    `peek_line()` looks at the first token of the next non-blank line, `next_line()` makes it current. The token
    cursor walks that line: `peek()` returns the current token, `eat()` returns it and moves on. There is one method
-   per rule of `grammar.ebnf`. A declaration is one line; an `if` reads its condition line, the `{` line, every
-   line of the block and the `}` line — and the program and every block are read by the same loop, which is
+   per rule of `grammar.ebnf`. A declaration is one line; an `if` (or a `while`) reads its condition line, the
+   `{` line, every line of the block and the `}` line — and the program and every block are read by the same loop, which is
    why blocks nest for free. One token of look-ahead decides every choice: `i32` starts a declaration, `if` an
    if, a name an assignment.
    It reads tokens only, never the source text, and puts no token into the tree.
@@ -328,6 +331,11 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
      gets a `br` to `merge`, unless the block the builder ended up in is already terminated: an `exit` inside
      an arm has its `ret`, and a block takes exactly one terminator. When both arms exit, `merge` has no
      predecessor and still gets what follows the `if`.
+   - A `while` is three blocks: `cond`, which the loop comes back to, `body` and `end`. The current block jumps to
+     `cond`, `cond` does a `cbranch` to `body` or `end`, and `body` ends with `br cond` — the back edge, the only
+     branch in the IR that points backwards (unless an `exit` in the body already ended it). `mem2reg` turns the
+     loop variables into `phi`s at the top of `cond`. A slot declared in the body is still one `alloca` in
+     `entry`, not a new one on every pass.
    - `!` is `xor i1 %v, true` (`builder.not_`).
    - A variable read is a `load`; an operation asks its children for their values before emitting `add`,
      `sub` or `mul` — operands first, bottom-up.

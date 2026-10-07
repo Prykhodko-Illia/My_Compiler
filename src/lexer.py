@@ -24,7 +24,7 @@ class Token:
     text: str
     line: int
     col: int         # 1-based position of the token's first byte
-    sub: str = ""    # typename | specifier | statement | branch | boolean | numeric
+    sub: str = ""    # typename | specifier | statement | branch | loop | boolean | numeric
                      # start | end | assign | plus | minus | times | eq | ne | not
 
     def __str__(self):
@@ -41,6 +41,7 @@ KEYWORDS = {
     b"exit": "statement",
     b"if": "branch",
     b"else": "branch",
+    b"while": "loop",
     b"true": "boolean",
     b"false": "boolean",
 }

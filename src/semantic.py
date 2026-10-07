@@ -26,7 +26,7 @@ The type rules:
   * an i32 value may initialise or be assigned to an i64 variable -- and that is the only
     conversion in the language: never the other way round, never across bool;
   * ! takes a bool and gives a bool;
-  * the condition of an if is a bool;
+  * the condition of an if or a while is a bool;
   * exit takes an integer or a bool.
 """
 
@@ -90,13 +90,22 @@ class SemanticChecker:
         self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
         node.decl = decl
 
-    def visit_if(self, node):
+    def check_condition(self, node, keyword):
         condition = node.condition.accept(self)
         if condition != "bool":
-            raise error_at(node, f"the condition of 'if' must be bool, got {condition}")
+            raise error_at(node, f"the condition of '{keyword}' must be bool, got {condition}")
+
+    def visit_if(self, node):
+        self.check_condition(node, "if")
         node.then_block.accept(self)
         if node.else_block:
             node.else_block.accept(self)
+
+    def visit_while(self, node):
+        # The condition is outside the body's frame: it is evaluated before the body
+        # starts and after it ends, so it can only see what the while itself can see.
+        self.check_condition(node, "while")
+        node.body.accept(self)
 
     def visit_block(self, node):
         self.scopes.append({})

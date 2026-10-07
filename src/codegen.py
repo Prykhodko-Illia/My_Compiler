@@ -22,9 +22,13 @@ blocks to the function, ends the current block with a cbranch on the i1 of the c
 and moves the builder from one to the next. Every basic block ends with exactly one
 terminator -- br, or the ret of an exit -- and nothing after it.
 
+A while is three blocks: cond, which the loop returns to, body and end. The body ends with
+a br back to cond -- the one edge in the IR that points backwards.
+
 Every alloca goes to the entry block, wherever the builder is when the declaration is met:
-a slot made inside then would not exist on the else path, and LLVM promotes only
-entry-block allocas to registers (opt -passes=mem2reg).
+a slot made inside then would not exist on the else path, a slot made inside a loop body
+would take more stack on every pass, and LLVM promotes only entry-block allocas to
+registers (opt -passes=mem2reg).
 """
 
 from llvmlite import ir
@@ -136,6 +140,22 @@ class CodeGen:
         # What follows the if goes here. When both arms exit, merge has no predecessor;
         # it still gets the statements after the if and stays valid.
         self.builder.position_at_end(merge_bb)
+
+    def visit_while(self, node):
+        cond_bb = self.function.append_basic_block("cond")
+        body_bb = self.function.append_basic_block("body")
+        end_bb = self.function.append_basic_block("end")
+        self.builder.branch(cond_bb)                             # a block can't fall through
+
+        self.builder.position_at_end(cond_bb)                    # evaluated on every pass
+        self.builder.cbranch(node.condition.accept(self), body_bb, end_bb)
+
+        self.builder.position_at_end(body_bb)
+        node.body.accept(self)
+        if not self.builder.block.is_terminated:                 # an exit in the body has its ret
+            self.builder.branch(cond_bb)                         # the back edge
+
+        self.builder.position_at_end(end_bb)                     # what follows the while
 
     def visit_block(self, node):
         for stmt in node.statements:

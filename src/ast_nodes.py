@@ -12,6 +12,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
     |   +-- DeclNode     name, type_name, mutable, init: ExprNode
     |   +-- AssignNode   name, value: ExprNode
     |   +-- IfNode       condition: ExprNode, then_block: BlockNode, else_block: BlockNode | None
+    |   +-- WhileNode    condition: ExprNode, body: BlockNode
     +-- BlockNode        statements: [StmtNode], exit: ExitNode | None
     +-- ExitNode         value: ExprNode
     +-- ExprNode   (abstract)      -- also carries `type`, filled in by the semantic pass
@@ -23,7 +24,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
 
 Every node keeps the line and column of the token it came from -- the name for a
 declaration or an assignment, the operator for an operation, the 'if' for an if, the
-'{' for a block -- so the walks that come
+'while' for a while, the '{' for a block -- so the walks that come
 after the parser can say where 'x' is not mut without having any tokens left. The tree
 holds names, numbers, flags and child nodes: never a token.
 
@@ -141,9 +142,25 @@ class IfNode(StmtNode):
         return visitor.visit_if(self)
 
 
+class WhileNode(StmtNode):
+    def __init__(self, line, col, condition, body):
+        super().__init__(line, col)       # position of the 'while' keyword
+        self.condition = condition        # ExprNode
+        self.body = body                  # BlockNode
+
+    def label(self):
+        return "While"
+
+    def children(self):
+        return [self.condition, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+
 class BlockNode(Node):
-    """The lines between '{' and '}'. Not a statement of its own: it only follows an if
-    or an else. It may end with an exit, like the program does."""
+    """The lines between '{' and '}'. Not a statement of its own: it only follows an if,
+    an else or a while. It may end with an exit, like the program does."""
 
     def __init__(self, line, col, statements, exit):
         super().__init__(line, col)       # position of the '{'

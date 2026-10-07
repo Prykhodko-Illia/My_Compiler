@@ -1,0 +1,6 @@
+i32 mut n{5}
+while n == 0
+{
+    n := 100
+}
+exit n
