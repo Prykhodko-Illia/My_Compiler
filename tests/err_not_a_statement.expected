@@ -1,1 +1,0 @@
-compilation error: line 2:1: a statement must start with 'i32', 'exit' or a variable, found keyword 'mut'

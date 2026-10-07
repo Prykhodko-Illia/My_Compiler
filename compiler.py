@@ -1,7 +1,11 @@
 """Entry point:  python3 compiler.py <source> <output.ll>
+          or:  python3 compiler.py --ast <source>
           or:  python3 compiler.py --tokens <source>
 
-source bytes --lexer--> tokens --parser--> AST --codegen--> str(module) -> output.ll
+source bytes --lexer--> tokens --parser--> AST --semantic pass--> typed AST
+            --walk (codegen)--> str(module) -> output.ll
+
+Nothing is built until the semantic pass has approved the whole tree.
 """
 
 import sys
@@ -9,7 +13,8 @@ import sys
 from src.codegen import codegen
 from src.errors import CompileError
 from src.lexer import lex
-from src.parser import end_of_input, parse
+from src.parser import parse
+from src.semantic import check
 
 
 def report(e):
@@ -30,10 +35,11 @@ def main():
     args = sys.argv[1:]
     if len(args) != 2:
         print("usage: python3 compiler.py <source> <output.ll>\n"
+              "       python3 compiler.py --ast <source>\n"
               "       python3 compiler.py --tokens <source>", file=sys.stderr)
         sys.exit(2)
 
-    if args[0] == "--tokens":                # debug: print the token stream, one source line per row
+    if args[0] == "--tokens":                # debug: the token stream, one source line per row
         data = read_source(args[1])
         try:
             token_lines = lex(data)
@@ -43,11 +49,21 @@ def main():
             print("  ".join(str(t) for t in tokens))
         return
 
+    if args[0] == "--ast":                   # debug: the tree, writing no output file
+        data = read_source(args[1])
+        try:
+            program = parse(lex(data))
+        except CompileError as e:
+            report(e)
+        print(program.dump(), end="")
+        return
+
     src_path, out_path = args
     data = read_source(src_path)
     try:
-        token_lines = lex(data)
-        module = codegen(parse(token_lines), end_of_input(token_lines))
+        # lex -> parse -> check (types, names) -> emit: nothing is built until the
+        # semantic pass has approved the whole tree.
+        module = codegen(check(parse(lex(data))))
     except CompileError as e:
         report(e)
 

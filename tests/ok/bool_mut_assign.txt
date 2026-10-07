@@ -1,0 +1,4 @@
+bool mut flag{true}
+i32 a{1}
+flag := a == 2
+exit flag

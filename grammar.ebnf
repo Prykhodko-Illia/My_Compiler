@@ -1,0 +1,62 @@
+(* Grammar of the language, in EBNF.
+ *
+ * Notation:  name ::= right side      a rule
+ *            |                        alternatives
+ *            [ x ]                    optional
+ *            { x }                    zero or more
+ *            "x"                      a terminal: a token the lexer emits, with this text
+ *            name                     a non-terminal: it has a rule of its own
+ *
+ * Terminals come straight from the lexer (src/lexer.py):
+ *   "i32" "i64" "bool"    keyword tokens: the type names
+ *   "mut" "exit"          keyword tokens
+ *   "true" "false"        keyword tokens: the boolean literals
+ *   "{" "}"               block tokens
+ *   ":=" "+" "-" "*"      operator tokens
+ *   "==" "!="             operator tokens, two bytes each
+ *   ident                 identifier token: letters, digits and _, not starting with a
+ *                         digit, and not a keyword -- how it is spelled is the lexer's rule
+ *   number                constant token: decimal digits, no sign
+ *
+ * One statement per line. The lexer ends every line with an endline token, which is what
+ * tells the parser a statement is over; blank lines carry no statement and are skipped.
+ *
+ * What this grammar deliberately cannot say (those are semantics, checked by the pass in
+ * src/semantic.py): that a variable was declared before it is used, that it was declared
+ * only once, that it is "mut" before it is assigned, and every type rule -- that "+" takes
+ * two integers, that a comparison gives a bool, that an i32 may widen into an i64.
+ *)
+
+program   ::= { statement } exit
+
+statement ::= decl | assign
+
+decl      ::= type [ "mut" ] ident "{" expr "}"
+
+type      ::= "i32" | "i64" | "bool"
+
+assign    ::= ident ":=" expr
+
+exit      ::= "exit" factor
+
+expr      ::= arith [ ( "==" | "!=" ) arith ]
+
+arith     ::= term { ( "+" | "-" ) term }
+
+term      ::= factor { "*" factor }
+
+factor    ::= number | "true" | "false" | ident
+
+(* Precedence and associativity come out of the shape of the last four rules, with no
+ * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
+ * both sides of "==" are whole chains: x * 2 != y + 5 compares the two results. Inside a
+ * chain, arith calls term before it looks for a "+", so everything a "*" glues together is
+ * already one node when the "+" is seen. Each loop builds the new node with what it has so
+ * far as the left child, so 10 - 3 - 2 parses as (10 - 3) - 2 -- left associativity.
+ *
+ * expr has no loop around the comparison, so at most one comparison per expression.
+ * There are no parentheses in the language yet.
+ *
+ * Note that exit takes a factor, not an expr: a single constant, boolean literal or
+ * variable, never an operation.
+ *)

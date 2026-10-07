@@ -10,5 +10,7 @@ class CompileError(Exception):
         self.msg = msg
 
 
-def error_at(token, msg):
-    return CompileError(token.line, token.col, msg)
+def error_at(where, msg):
+    """An error at a token (in the lexer) or at an AST node (in the walk over the tree):
+    both keep a line and a column."""
+    return CompileError(where.line, where.col, msg)
