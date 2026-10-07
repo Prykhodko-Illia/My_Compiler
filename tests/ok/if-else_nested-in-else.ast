@@ -1,0 +1,25 @@
+Program
+  Decl r i32 mut
+    Const 0
+  If
+    Bool false
+    Block
+      Assign r
+        Const 1
+    Block
+      If
+        BinOp ==
+          Var r
+          Const 0
+        Block
+          Assign r
+            Const 2
+        Block
+          Assign r
+            Const 3
+      Assign r
+        BinOp *
+          Var r
+          Const 10
+  Exit
+    Var r

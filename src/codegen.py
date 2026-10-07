@@ -14,12 +14,22 @@ Types are explicit in the IR: an i32 is an i32, an i64 is an i64, a bool is an i
 implicit conversion of the language -- i32 widening into i64 -- becomes an explicit sext,
 emitted by coerce() at exactly the five places the checker allows it: an initialiser, an
 assignment, the operands of + - *, the operands of == !=, and the exit value.
+
+A block of the source is not a basic block of the IR. A source block is a scope, and the
+semantic pass already resolved every name in it; here it is only a run of statements. A
+basic block is a builder position: an if appends then, else (when there is one) and merge
+blocks to the function, ends the current block with a cbranch on the i1 of the condition,
+and moves the builder from one to the next. Every basic block ends with exactly one
+terminator -- br, or the ret of an exit -- and nothing after it.
+
+Every alloca goes to the entry block, wherever the builder is when the declaration is met:
+a slot made inside then would not exist on the else path, and LLVM promotes only
+entry-block allocas to registers (opt -passes=mem2reg).
 """
 
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from .errors import CompileError
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
@@ -33,11 +43,13 @@ class CodeGen:
     """Builds a module with a single main function from a checked ProgramNode."""
 
     def __init__(self):
-        self.module = ir.Module(name="practice4")
+        self.module = ir.Module(name="practice5")
         self.module.triple = llvm.get_default_triple()
 
-        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
-        self.builder = ir.IRBuilder(main.append_basic_block("entry"))
+        self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.entry = self.function.append_basic_block("entry")
+        self.builder = ir.IRBuilder(self.entry)
+        self.last_slot = None      # the last alloca in entry: the next one goes after it
 
         self.printf = ir.Function(
             self.module,
@@ -52,8 +64,9 @@ class CodeGen:
         self.word_true = self.global_string("word_true", b"true\0")
         self.word_false = self.global_string("word_false", b"false\0")
 
-        # Keyed by the DeclNode, not by the name: from Practice 5 on, two variables in
-        # different scopes may share a name, and the tree already says which one is meant.
+        # Keyed by the DeclNode, not by the name: two variables in different scopes may
+        # share a name, and the tree already says which one is meant. Shadowing costs
+        # nothing here: two declarations, two slots.
         self.slots = {}            # DeclNode -> the alloca holding that variable
 
     def global_string(self, name, text):
@@ -66,6 +79,17 @@ class CodeGen:
     def run(self, program):
         program.accept(self)
         return self.module
+
+    def alloca_in_entry(self, decl):
+        """A slot for `decl` at the top of the entry block, then back to where we were."""
+        here = self.builder.block
+        if self.last_slot is None:
+            self.builder.position_at_start(self.entry)
+        else:
+            self.builder.position_after(self.last_slot)          # declaration order
+        self.last_slot = self.builder.alloca(LLVM_TYPE[decl.type_name], name=decl.name)
+        self.builder.position_at_end(here)
+        return self.last_slot
 
     def coerce(self, value, have, want):
         """The language's one implicit conversion, made explicit."""
@@ -82,8 +106,8 @@ class CodeGen:
 
     def visit_decl(self, node):
         value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
-        ptr = self.builder.alloca(LLVM_TYPE[node.type_name], name=node.name)
-        self.builder.store(value, ptr)
+        ptr = self.alloca_in_entry(node)
+        self.builder.store(value, ptr)                           # the store stays where we are
         self.slots[node] = ptr
 
     def visit_assign(self, node):
@@ -91,11 +115,37 @@ class CodeGen:
         value = self.coerce(node.value.accept(self), node.value.type, want)
         self.builder.store(value, self.slots[node.decl])
 
-    # TODO(Practice 5, Task 3): then / else / merge blocks, entry-block slots, '!'.
     def visit_if(self, node):
-        raise CompileError(node.line, node.col, "'if' is not supported by the code generator yet")
+        cond = node.condition.accept(self)                       # an i1, in the current block
+        then_bb = self.function.append_basic_block("then")
+        else_bb = self.function.append_basic_block("else") if node.else_block else None
+        merge_bb = self.function.append_basic_block("merge")
+        self.builder.cbranch(cond, then_bb, else_bb or merge_bb) # ends the current block
+
+        for block, arm_bb in ((node.then_block, then_bb), (node.else_block, else_bb)):
+            if block is None:
+                continue
+            self.builder.position_at_end(arm_bb)
+            block.accept(self)
+            # The block the arm ended in, not arm_bb: a nested if moved the builder to its
+            # own merge. An arm that exited already has its ret, and a second terminator
+            # is not allowed.
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+        # What follows the if goes here. When both arms exit, merge has no predecessor;
+        # it still gets the statements after the if and stays valid.
+        self.builder.position_at_end(merge_bb)
+
+    def visit_block(self, node):
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit:
+            node.exit.accept(self)
 
     def visit_exit(self, node):
+        # printf and ret wherever the exit stands -- in entry, in an arm or in a merge. The
+        # ret terminates the current block, so an if around it adds no br.
         value = node.value.accept(self)
         if node.value.type == "bool":
             word = self.builder.select(value,
@@ -127,8 +177,8 @@ class CodeGen:
             rhs = self.coerce(rhs, node.right.type, width)
         return self.builder.icmp_signed(node.op, lhs, rhs, name="cmp")
 
-    def visit_not(self, node):            # TODO(Practice 5, Task 3)
-        raise CompileError(node.line, node.col, "'!' is not supported by the code generator yet")
+    def visit_not(self, node):
+        return self.builder.not_(node.operand.accept(self), name="not")   # xor i1 %v, true
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])

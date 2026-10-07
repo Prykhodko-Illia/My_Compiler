@@ -19,6 +19,9 @@ tree and throws it out if it lies, and only then does one last walk emit LLVM IR
 source bytes ──lexer──► tokens ──parser──► AST ──semantic pass──► typed AST ──walk (IRBuilder)──► output.ll ──llc + clang──► program
 ```
 
+Since Practice 5 the language branches: `if` / `else` with blocks, and `!`. A block of the source is a **scope** in the
+semantic pass and a run of **basic blocks** in the IR — two different things, kept apart on purpose.
+
 The grammar the parser follows is written down in [`grammar.ebnf`](grammar.ebnf).
 Nothing reaches the builder until the pass has approved the whole program.
 
@@ -57,6 +60,13 @@ Run the IR directly, no linker needed:
 
 ```bash
 lli output.ll
+```
+
+Want to see what LLVM does with your slots? `mem2reg` promotes the entry-block `alloca`s to registers, and
+where a variable was assigned in both arms of an `if`, a `phi` shows up in the merge block:
+
+```bash
+opt -passes=mem2reg -S output.ll
 ```
 
 Or go all the way to a native binary:
@@ -100,6 +110,20 @@ The `*` sits deeper than the `+`, so it is evaluated first: 14, not 20. Nobody w
 it falls out of the shape of the grammar. The declaration line shows the type it was declared with, so
 `i64 mut y{x}` dumps as `Decl y i64 mut` and `bool d{a == 10}` as `Decl d bool const` over a `BinOp ==`.
 
+An `if` dumps as `If` over its condition, then one `Block` per arm; `!` dumps as `Not`:
+
+```
+If
+  Not
+    Var c
+  Block
+    Assign a
+      Const 1
+  Block
+    Exit
+      Var a
+```
+
 ### 👁️ See what the lexer sees
 
 `--tokens` runs the lexer only and dumps every token it finds, one source line per row,
@@ -130,6 +154,9 @@ Every program lives in one of two folders, and `NAME.expected` next to it holds 
   no output file was left behind.
 - If a `NAME.ast` file sits next to a program, the `--ast` dump must match it as well.
 
+New programs are named after the feature they exercise, `feature_variant`: `if-else_nested.txt`,
+`scope_shadow-type.txt`, `not_on-integer.txt`.
+
 A program in the wrong folder is a failure by itself: an `ok` program that doesn't compile, or an `err`
 program that does, is reported as such. You get `PASS` or `FAIL` for each test, then a summary; if even one
 test fails, the script exits with a non-zero code. To add a test, drop a `.txt` and a `.expected` into the
@@ -139,15 +166,33 @@ folder that matches what it should do.
 
 ## 📜 The language
 
-One statement per line. Three types: `i32` and `i64` are integers, `bool` is a boolean whose only literals are
-`true` and `false`. That's the whole language, cuh.
+One statement per line, and an `if` spreads over several. Three types: `i32` and `i64` are integers, `bool` is a
+boolean whose only literals are `true` and `false`. That's the whole language, cuh.
 
 | Statement | Example | What it does |
 |---|---|---|
 | const declaration | `i32 x{5}` · `bool b{true}` | declares `x`; the initialiser in `{}` is mandatory |
 | mut declaration | `i64 mut y{10}` | declares `y`, which can be reassigned; `mut` comes after the type name |
 | assignment | `y := x * 3 + 1` | only a `mut` variable may be assigned |
-| exit | `exit y` · `exit 42` · `exit true` | prints `Program exit with result <value>` and ends the program; it is the last statement, and there is exactly one |
+| if / else | see below | runs the first block when the `bool` condition is true, else the second; `else` is optional |
+| exit | `exit y` · `exit 42` · `exit !b` | prints `Program exit with result <value>` and ends the program; it is the last line of its block, and the program ends with one |
+
+```
+if b
+{
+    a := a + 5
+}
+else
+{
+    a := a - 5
+}
+```
+
+- `if` and its condition stand on one line; `{`, `}` and `else` stand alone on theirs. A block holds at least one line.
+- Blocks nest: an `if` is a statement, so it may stand inside a block.
+- A block may end with `exit`, as its last line. The program still ends with an `exit` of its own.
+- A block is a scope. A name declared inside is gone after the `}`, and a block may declare a name that already
+  exists outside it, with any type — that's shadowing. A name means the innermost declaration of it.
 
 The rules:
 
@@ -157,20 +202,25 @@ The rules:
   So `2 + 3 * 4` is 14, and `10 - 3 - 2` is `(10 - 3) - 2`, which is 5.
 - A comparison binds weaker than all of it and gives a `bool`, so `x * 2 != y + 5` compares the two results.
   One comparison per expression.
+- `!` negates a `bool` and binds tighter than everything: it applies to the factor right after it, so `!a == b`
+  compares `!a` with `b`. Spaces after `!` are optional.
+- The condition of an `if` is a `bool`.
 - Arithmetic works on integers only, and the result takes the wider of the two types: `i32 + i64` is `i64`.
 - `==` and `!=` compare two integers (any mix of widths) or two bools.
 - **An `i32` value may go into an `i64` variable, and nothing else converts**: an `i64` never goes back into an
   `i32`, and a `bool` never meets an integer.
 - A constant takes the narrowest type it fits: `10` is `i32`, `3000000000` is `i64`, and anything past
   `9223372036854775807` is an error.
-- `exit` takes a single constant or variable — an integer or a bool — never an operation.
+- `exit` takes a single constant or variable — an integer or a bool, optionally under `!` — never an operation.
 - Names are ASCII letters, digits and `_`, and can't start with a digit. `i32`, `i64`, `bool`, `mut`, `exit`,
-  `true` and `false` are reserved.
-- A variable is declared once, before its first use, and can't appear in its own initialiser.
+  `if`, `else`, `true` and `false` are reserved.
+- A variable is declared once per block, before its first use, and can't appear in its own initialiser
+  (in a block that shadows it, the initialiser reads the outer one).
 - Spaces and tabs separate tokens and are optional around `{`, `}`, `:=` and the operators. Blank lines are ignored.
 - Not in the language, so each of these is a compilation error: parentheses; `/`, `<`, `>` or any operator other
-  than `+ - * == !=`; a lone `=` or `!`; a sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`);
-  two comparisons in one expression; two statements on one line; a declaration without `{}`; anything after `exit`.
+  than `+ - * == != !`; a lone `=`; a sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`);
+  two comparisons in one expression; two statements on one line; a declaration without `{}`; `{` on the `if` line;
+  an empty block; anything after an `exit` in its block.
 
 Example:
 
@@ -208,9 +258,9 @@ have been typed.
 
 | Caught by | What gets you caught |
 |---|---|
-| lexer | an unknown byte (anything outside the language, including `(`, `/`, `<`, bytes above 127 and `\r`); a `{` not closed on the same line; a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=` or `!` |
-| parser | a line that isn't a declaration, an assignment or `exit`; a declaration without `{initialiser}`; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement; a statement after `exit`; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in — plus using a variable before its declaration, declaring one twice, and assigning to one that isn't `mut` |
+| lexer | an unknown byte (anything outside the language, including `(`, `/`, `<`, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=` |
+| parser | a line that isn't a declaration, an assignment, an `if` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` line; no `{` line after `if` or `else`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, a condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut` |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -222,10 +272,11 @@ compiler.py         entry point: command-line arguments, --ast, --tokens, error 
 grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
   lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON, EQ, BANG)
-  parser.py         Parser: recursive descent, one method per grammar rule, builds the tree
-  ast_nodes.py      the tree: Node, ProgramNode, DeclNode, AssignNode, ExitNode, BinOpNode, VarNode, BoolNode, ConstNode
-  semantic.py       SemanticChecker: the walk that owns the symbol table, types every expression and rejects the rest
-  codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — sext, icmp, select
+  parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
+  ast_nodes.py      the tree: Node, ProgramNode, DeclNode, AssignNode, IfNode, BlockNode, ExitNode,
+                    BinOpNode, NotNode, VarNode, BoolNode, ConstNode
+  semantic.py       SemanticChecker: the walk that owns the scope stack, types every expression and rejects the rest
+  codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — basic blocks, cbranch, sext, icmp, select
   errors.py         CompileError with line and column
 tests/ok/           programs that must compile, with their .expected output (and .ast files for some)
 tests/err/          programs that must fail, with their .expected error message
@@ -238,10 +289,16 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
 1. **Lexer** (`src/lexer.py`): one loop reads the source one byte at a time, with an explicit state.
    No regular expressions, no `split()`, no lexer generator. A word is checked against the keyword table
    only once it is complete. Every token records its kind, text, line and column.
+   `!` is the one state with two ways out: `=` makes `!=`, anything else makes a lone `!` and is read again.
+   `{` and `}` are plain tokens — the lexer doesn't pair them, the parser does.
    The result is a list of lines, each a list of tokens.
-2. **Parser** (`src/parser.py`): recursive descent, by hand. Two primitives do all the reading — `peek()` returns
-   the current token, `eat()` returns it and moves on — and there is one method per rule of `grammar.ebnf`.
-   One token of look-ahead decides every choice: `i32` starts a declaration, a name starts an assignment.
+2. **Parser** (`src/parser.py`): recursive descent, by hand, with two cursors. The line cursor walks the source:
+   `peek_line()` looks at the first token of the next non-blank line, `next_line()` makes it current. The token
+   cursor walks that line: `peek()` returns the current token, `eat()` returns it and moves on. There is one method
+   per rule of `grammar.ebnf`. A declaration is one line; an `if` reads its condition line, the `{` line, every
+   line of the block and the `}` line — and the program and every block are read by the same loop, which is
+   why blocks nest for free. One token of look-ahead decides every choice: `i32` starts a declaration, `if` an
+   if, a name an assignment.
    It reads tokens only, never the source text, and puts no token into the tree.
    Precedence needs no table: `parse_expr` calls `parse_term` before it looks for a `+`, so everything a `*`
    glues together is already one node by the time the `+` is seen. Each loop puts what it has so far in as the
@@ -252,13 +309,26 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
    positions with no tokens in sight. `dump()` prints the tree, and `accept(visitor)` sends a walk to the right method.
 4. **The semantic pass** (`src/semantic.py`): a walk of its own, over the whole tree, before any IR exists — so a
    bad program is rejected without a single instruction being built, and the pass can be tested without LLVM at all.
-   It owns the symbol table (name → declaration, which knows its type and `mut` flag) and answers the question
-   the parser cannot: what type is this expression? It leaves two fields behind, and that is its entire contract
-   with the generator: `node.type` on every expression, `node.decl` on every name. Everything it enforces —
-   the type rules, declared before use, declared once, `mut` before `:=` — lives here and nowhere else.
-5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind, into a `main` function with one
-   `entry` block. It trusts the tree and checks nothing.
-   - A declaration is an `alloca` of the declared type plus a `store` of the initialiser.
+   It owns the symbol table and answers the question the parser cannot: what type is this expression?
+   The symbol table is a stack of frames (name → declaration, which knows its type and `mut` flag). A block pushes
+   an empty frame and pops it at its `}`; a declaration goes into the top frame and is checked for a duplicate
+   there only, so an inner block may shadow an outer name with any type; a use walks the frames from the top down
+   and takes the first hit. It leaves two fields behind, and that is its entire contract with the generator:
+   `node.type` on every expression, `node.decl` on every name — so three `x` in three scopes are three
+   declarations, and the generator never has to find out which is which. Everything it enforces — the type
+   rules, a `bool` condition, a `bool` under `!`, declared before use, declared once per block, `mut` before
+   `:=` — lives here and nowhere else.
+5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind, into a `main` function that
+   starts with an `entry` block. It trusts the tree and checks nothing.
+   - A declaration is an `alloca` of the declared type plus a `store` of the initialiser. The `alloca` always goes
+     to the top of the `entry` block, whatever block the builder is in: a slot made inside `then` wouldn't exist
+     on the `else` path, and `mem2reg` only promotes entry-block allocas. The `store` stays where it is.
+   - An `if` appends `then`, `else` (when there is one) and `merge` blocks to the function and ends the current
+     block with a `cbranch` on the `i1` of the condition — to two block objects, never labels as text. Each arm
+     gets a `br` to `merge`, unless the block the builder ended up in is already terminated: an `exit` inside
+     an arm has its `ret`, and a block takes exactly one terminator. When both arms exit, `merge` has no
+     predecessor and still gets what follows the `if`.
+   - `!` is `xor i1 %v, true` (`builder.not_`).
    - A variable read is a `load`; an operation asks its children for their values before emitting `add`,
      `sub` or `mul` — operands first, bottom-up.
    - The one implicit conversion of the language is explicit here: `coerce()` emits `sext i32 … to i64` at the five
@@ -267,7 +337,8 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
    - A comparison is `icmp` with a signed predicate on two operands of the same width, producing the `i1` that a
      `bool` variable stores.
    - `exit` calls `printf` (declared, not defined; the linker finds it in libc): an integer is widened to `i64` and
-     printed with `%lld`, a bool picks between two string constants with a `select` and prints with `%s`. Then `ret 0`.
+     printed with `%lld`, a bool picks between two string constants with a `select` and prints with `%s`. Then
+     `ret 0` — wherever the `exit` stands, so an `exit` in an arm terminates that arm's block.
 
 Every later phase is another walk over this same tree, and none of them touches the parser.
 

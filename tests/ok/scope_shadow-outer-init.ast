@@ -1,0 +1,14 @@
+Program
+  Decl t i32 const
+    Const 5
+  If
+    Bool true
+    Block
+      Decl t i64 const
+        BinOp +
+          Var t
+          Const 1
+      Exit
+        Var t
+  Exit
+    Var t

@@ -1,0 +1,13 @@
+i32 x{7}
+i64 mut total{0}
+if x == 7
+{
+    bool x{false}
+    if x == false
+    {
+        i64 x{3000000000}
+        total := x
+    }
+    total := total + 1
+}
+exit total

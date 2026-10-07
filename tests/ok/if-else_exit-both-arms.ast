@@ -1,0 +1,15 @@
+Program
+  Decl a i32 const
+    Const 3
+  If
+    BinOp ==
+      Var a
+      Const 3
+    Block
+      Exit
+        Bool true
+    Block
+      Exit
+        Bool false
+  Exit
+    Const 0
