@@ -1,0 +1,23 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i64 mut radius
+}
+fn mk := (i32 v) -> Point
+{
+    Point q{v, v * 2}
+    exit q
+}
+fn size := (Circle k) -> i64
+{
+    exit k.radius
+}
+Circle a{mk(4), 1}
+Circle b{{a.center.y, 6}, a.radius + 9}
+i64 s{b.center.x + b.center.y + size(b)}
+exit s

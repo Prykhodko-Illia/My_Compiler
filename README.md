@@ -225,6 +225,9 @@ else                        }
 - A field without `mut` gets its value only when the object is created. So:
   - writing through `x.a.b` needs **every link** to be `mut` — the variable, `a` and `b`;
   - `:=` on a whole object (or on a struct-typed field) needs every field inside it, at every depth, to be `mut`.
+- A struct field can get its own `{}` inside the outer one, at any depth, with the same rules — one value per
+  field, in order, or one whole object: `Circle c{{10, 20}, 5}`, `Ring g{{{10, 20}, r}, {{10, 20}, 2}}`. A `{}`
+  where a built-in value belongs (`Point p{{1, 2}, 3}`) is an error at that `{`.
 - Objects are values: `Point q{p}` copies `p`, and so does passing it to a function or returning it. Changing
   `p` afterwards leaves `q` alone.
 - An object can't be printed by `exit`, compared with `==`, or used in arithmetic.
@@ -354,7 +357,7 @@ have been typed.
 |---|---|
 | lexer | an unknown byte (anything outside the language, including `/`, `<`, `>` on its own, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=` |
 | parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a function body that doesn't end with `exit`; a call alone on a line; a missing `,` or `)` in a signature or a call; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}`, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -439,6 +442,9 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
      with `getelementptr`: `0` to step through the pointer, then one index per link — `c.center.x` is
      `gep %c, 0, 0, 0`. A whole object moves as one value: one `load` of `%"Point"` and one `store`, which is how
      `Point q{p}` copies, and how objects are passed to and returned from functions.
+   - An inner `{}` (`Circle c{{10, 20}, 5}`) is not an object in memory but one value of the struct type, built in
+     registers: it starts as `undef`, and each field goes in with `insertvalue` by index — recursively for a
+     `{}` inside it. The finished value is stored into its field through the outer `gep`.
    - A declaration is an `alloca` of the declared type plus a `store` of the initialiser. The `alloca` always goes
      to the top of the `entry` block, whatever block the builder is in: a slot made inside `then` wouldn't exist
      on the `else` path, and `mem2reg` only promotes entry-block allocas. The `store` stays where it is.

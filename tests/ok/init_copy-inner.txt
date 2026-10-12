@@ -1,0 +1,13 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i64 mut radius
+}
+Point p{3, 4}
+Circle c{{p}, 7}
+exit c.center.y

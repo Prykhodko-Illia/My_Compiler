@@ -59,7 +59,11 @@ fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" typ
 
 statement ::= decl | assign | if | while
 
-decl      ::= type [ "mut" ] ident "{" expr { "," expr } "}"
+decl      ::= type [ "mut" ] ident init
+
+init      ::= "{" value { "," value } "}"
+
+value     ::= expr | init
 
 type      ::= "i32" | "i64" | "bool" | ident
 
@@ -105,6 +109,10 @@ call      ::= ident "(" [ expr { "," expr } ] ")"
  * block must end with exit, which the rule cannot say (a block's exit is optional), so the
  * parser checks it. fn and struct are not statements, so neither can stand in a block.
  * A call is a factor, not a statement: it can stand only where its value is used.
+ *
+ * init recurses through value, so a {} may hold {}s: Ring g{{{10, 20}, r}, {{10, 20}, 2}}.
+ * Whether a value may be a {} at all depends on the type of the field it lands in, which
+ * the grammar does not know, so the semantic pass checks it: a {} only for a struct.
  *
  * type ::= ident is what makes a line starting with a name ambiguous: "Point p{...}" is a
  * decl, "p := ..." and "p.x := ..." are assigns. The second token decides -- a name or

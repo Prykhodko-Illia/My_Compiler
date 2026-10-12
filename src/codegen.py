@@ -40,6 +40,11 @@ indices come from the semantic pass; nothing here looks a field up by name. A wh
 object moves as one value -- a load of %"Point" and a store of it -- which is how
 Point q{p} copies and how an object lands in a struct-typed field.
 
+An inner {} -- the {10, 20} of Circle c{{10, 20}, 5} -- is not an object in memory but one
+value of the struct type, built in registers: it starts as undef and each field goes in
+with insertvalue, by index. The outer {} still writes the object's fields with gep and
+store; an inner one is just a value that lands in one of them.
+
 Every alloca goes to the entry block, wherever the builder is when the declaration is met:
 a slot made inside then would not exist on the else path, a slot made inside a loop body
 would take more stack on every pass, and LLVM promotes only entry-block allocas to
@@ -287,6 +292,16 @@ class CodeGen:
         args = [self.coerce(arg.accept(self), arg.type, param.type_name)    # an i32 into an i64 parameter
                 for param, arg in zip(node.fn.params, node.args)]
         return self.builder.call(self.fns[node.fn], args, name=node.name)
+
+    def visit_init(self, node):
+        if node.copy:                                            # {p}: the whole object
+            return node.values[0].accept(self)
+        struct = self.structs[node.type]
+        value = ir.Constant(self.types[node.type], ir.Undefined) # nothing in it yet
+        for field, part in zip(struct.fields, node.values):     # an InitNode part recurses here
+            part_value = self.coerce(part.accept(self), part.type, field.type_name)
+            value = self.builder.insert_value(value, part_value, field.index)
+        return value
 
     def visit_bool(self, node):
         return ir.Constant(I1, 1 if node.value else 0)

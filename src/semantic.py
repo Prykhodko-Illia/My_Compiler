@@ -56,10 +56,12 @@ The struct rules:
   * a field chain names a field that exists at every link;
   * writing through x.a.b needs x, a and b all mut;
   * := replaces a whole object (or a struct-typed field) only when every field inside it,
-    at every depth, is mut: a const field gets its value only when the object is created.
+    at every depth, is mut: a const field gets its value only when the object is created;
+  * a struct field may be given a {} of its own inside the outer one, at any depth, with
+    the same rules; a {} where a built-in value belongs is an error at that '{'.
 """
 
-from .ast_nodes import ConstNode, DeclNode, ParamNode, chain
+from .ast_nodes import ConstNode, DeclNode, InitNode, ParamNode, chain
 from .errors import CompileError, error_at
 
 I32_MAX = 2**31 - 1
@@ -213,23 +215,46 @@ class SemanticChecker:
         self.check_type(node)
         # Typed before the name exists: `i32 t{t}` is an error, and in a block that shadows
         # an outer t, `i64 t{t + 1}` reads the outer one.
-        for value in node.values:
-            value.accept(self)
-        brace, count = node.brace, len(node.values)
-        struct = self.structs.get(node.type_name)
-        if struct is None:
-            if count != 1:
-                raise CompileError(*brace, f"'{node.name}' of type {node.type_name} takes one value, got {count}")
-            self.check_assignable(node.values[0], node.type_name, node, f"initialise '{node.name}'")
-        elif count == 1 and node.values[0].type == node.type_name:
-            node.copy = True              # Point q{p}: the whole object
-        else:
-            if count != len(struct.fields):
-                raise CompileError(*brace, f"struct '{struct.name}' has {plural(len(struct.fields), 'field')}, "
-                                           f"got {plural(count, 'value')}")
-            for field, value in zip(struct.fields, node.values):
-                self.check_assignable(value, field.type_name, value, f"initialise '{node.name}.{field.name}'")
+        node.copy = self.check_values(node.values, node.type_name, node.brace, node.name, node)
         self.scopes[-1][node.name] = node
+
+    def check_values(self, values, type_name, brace, path, at):
+        """The values of one {} -- a declaration's, or an inner one -- against the type it
+        initialises; `path` names what is being initialised (p, c.center). The same rules at
+        every depth: one value per field in field order, or one whole object of the struct,
+        which is copied -- the return value says which. A value may be a {} again, but only
+        where the field it lands in is a struct."""
+        for value in values:
+            if not isinstance(value, InitNode):   # an inner {} has no type of its own
+                value.accept(self)
+        count = len(values)
+        struct = self.structs.get(type_name)
+        if struct is None:                        # a built-in type: exactly one plain value
+            if count != 1:
+                raise CompileError(*brace, f"'{path}' of type {type_name} takes one value, got {count}")
+            self.check_not_init(values[0], path, type_name)
+            self.check_assignable(values[0], type_name, at, f"initialise '{path}'")
+            return False
+        if count == 1 and not isinstance(values[0], InitNode) and values[0].type == type_name:
+            return True                           # Point q{p}: the whole object
+        if count != len(struct.fields):
+            raise CompileError(*brace, f"struct '{struct.name}' has {plural(len(struct.fields), 'field')}, "
+                                       f"got {plural(count, 'value')}")
+        for field, value in zip(struct.fields, values):
+            field_path = f"{path}.{field.name}"
+            if isinstance(value, InitNode):       # Circle c{{10, 20}, 5}: the field's own {}
+                self.check_not_init(value, field_path, field.type_name)
+                value.type = field.type_name
+                value.copy = self.check_values(value.values, field.type_name, (value.line, value.col),
+                                               field_path, value)
+            else:
+                self.check_assignable(value, field.type_name, value, f"initialise '{field_path}'")
+        return False
+
+    def check_not_init(self, value, path, type_name):
+        """A {} makes a struct; where a built-in value is expected it is an error at its '{'."""
+        if isinstance(value, InitNode) and type_name not in self.structs:
+            raise error_at(value, f"'{path}' is {type_name}, not a struct: it takes a value, not {{}}")
 
     def visit_assign(self, node):
         target = chain(node.name, node.links)

@@ -25,6 +25,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
         +-- FieldNode    name, links: [Link]   -- c.center.x: the variable, then each field
         +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
+        +-- InitNode     values: [ExprNode]     -- an inner {} for a struct field: {10, 20}
         +-- BoolNode     value (True / False)
         +-- ConstNode    value
 
@@ -47,7 +48,8 @@ The semantic pass writes, and the code generator reads -- which is their whole c
     c.center.x is [0, 0] -- the generator never looks a field up by name;
   * `target_type` on every AssignNode: the type of what is written, the variable's or
     the last field's;
-  * `copy` on every DeclNode: true when a struct is initialised from one whole object.
+  * `copy` on every DeclNode and InitNode: true when a struct is initialised from one
+    whole object.
 
 `accept(visitor)` calls the visitor method for that node kind, so each walk over the
 tree (the semantic pass, then the code generator) is its own class.
@@ -372,6 +374,27 @@ class CallNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_call(self)
+
+
+class InitNode(ExprNode):
+    """An inner {} -- one value of a struct type, written field by field: the {10, 20} of
+    Circle c{{10, 20}, 5}. It stands only among the values of a declaration's {} or of
+    another InitNode. Its type is the type of the field it lands in, so the semantic pass
+    sets it from the outside, not from the values."""
+
+    def __init__(self, line, col, values):
+        super().__init__(line, col)       # position of the '{'
+        self.values = values              # [ExprNode], InitNodes among them
+        self.copy = False                 # {p}: one whole object, set by the semantic pass
+
+    def label(self):
+        return "Init"
+
+    def children(self):
+        return self.values
+
+    def accept(self, visitor):
+        return visitor.visit_init(self)
 
 
 class BoolNode(ExprNode):

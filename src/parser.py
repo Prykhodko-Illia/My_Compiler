@@ -7,7 +7,9 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   field_decl::= type [ "mut" ] ident NL
   fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
   statement ::= decl | assign | if | while
-  decl      ::= type [ "mut" ] ident "{" expr { "," expr } "}"
+  decl      ::= type [ "mut" ] ident init
+  init      ::= "{" value { "," value } "}"
+  value     ::= expr | init
   type      ::= "i32" | "i64" | "bool" | ident
   assign    ::= ident { "." ident } ":=" expr
   if        ::= "if" expr NL block [ "else" NL block ]
@@ -44,7 +46,7 @@ no token into the tree.
 """
 
 from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ConstNode,
-                        DeclNode, ExitNode, FieldDeclNode, FieldNode, FnNode, IfNode, Link,
+                        DeclNode, ExitNode, FieldDeclNode, FieldNode, FnNode, IfNode, InitNode, Link,
                         NotNode, ParamNode, ProgramNode, StructNode, VarNode, WhileNode)
 from .errors import CompileError
 
@@ -259,7 +261,7 @@ class Parser:
         return node
 
     def parse_decl(self):
-        """decl ::= type [ "mut" ] ident "{" expr { "," expr } "}"
+        """decl ::= type [ "mut" ] ident init
         type ::= "i32" | "i64" | "bool" | ident"""
         type_token = self.eat()                                # i32 | i64 | bool | a struct name
         mutable = self.at("keyword", "specifier")
@@ -268,16 +270,29 @@ class Parser:
         name = self.expect("identifier", None, "a variable name")
         if not self.at("block", "start"):
             raise self.error(f"variable '{name.text}' needs an initialiser in {{}}", name)
-        brace = self.eat()                                     # {
-        # How many values a type takes is the semantic pass's question: the parser does not
-        # know what a struct name stands for.
-        values = [self.parse_expr()]
-        while self.at("separator", "comma"):
-            self.eat()
-            values.append(self.parse_expr())
-        self.expect("block", "end", "'}'")
+        brace = self.peek()
+        values = self.parse_init_values()
         return DeclNode(name.line, name.col, name.text, type_token.text, mutable, values,
                         (brace.line, brace.col), (type_token.line, type_token.col))
+
+    def parse_init_values(self):
+        """init ::= "{" value { "," value } "}"     value ::= expr | init
+
+        How many values a type takes, and whether a value may be a {} at all, is the
+        semantic pass's question: the parser does not know what a struct name stands for."""
+        self.eat()                                             # {
+        values = [self.parse_value()]
+        while self.at("separator", "comma"):
+            self.eat()
+            values.append(self.parse_value())
+        self.expect("block", "end", "'}'")
+        return values
+
+    def parse_value(self):
+        if self.at("block", "start"):                          # an inner {}: Circle c{{10, 20}, 5}
+            brace = self.peek()
+            return InitNode(brace.line, brace.col, self.parse_init_values())
+        return self.parse_expr()
 
     def parse_assign(self):
         """assign ::= ident { "." ident } ":=" expr"""
