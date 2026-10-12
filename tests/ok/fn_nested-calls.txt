@@ -1,0 +1,11 @@
+fn add := (i32 a, i32 b) -> i32
+{
+    i32 s{a + b}
+    exit s
+}
+fn mul := (i32 a, i32 b) -> i32
+{
+    i32 p{a * b}
+    exit p
+}
+exit add(add(1, 2), mul(add(3, 4), 5))

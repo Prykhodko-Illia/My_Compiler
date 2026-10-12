@@ -1,0 +1,6 @@
+fn big := () -> i64
+{
+    exit 3000000000
+}
+i32 x{big()}
+exit x
