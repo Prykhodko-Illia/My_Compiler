@@ -25,6 +25,13 @@ terminator -- br, or the ret of an exit -- and nothing after it.
 A while is three blocks: cond, which the loop returns to, body and end. The body ends with
 a br back to cond -- the one edge in the IR that points backwards.
 
+A struct is a named type, %"Point" = type {i32, i32}, and an object is one alloca of it.
+A field is reached with gep: index 0 steps through the pointer to the object itself, then
+one index per link of the chain, so c.center.x is one gep with indices 0, 0, 0. The
+indices come from the semantic pass; nothing here looks a field up by name. A whole
+object moves as one value -- a load of %"Point" and a store of it -- which is how
+Point q{p} copies and how an object lands in a struct-typed field.
+
 Every alloca goes to the entry block, wherever the builder is when the declaration is met:
 a slot made inside then would not exist on the else path, a slot made inside a loop body
 would take more stack on every pass, and LLVM promotes only entry-block allocas to
@@ -34,11 +41,12 @@ registers (opt -passes=mem2reg).
 from llvmlite import ir
 import llvmlite.binding as llvm
 
+from .ast_nodes import chain
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
 
-LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}
+LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}     # the structs join it per module
 
 I8_PTR = ir.PointerType(I8)
 
@@ -47,8 +55,13 @@ class CodeGen:
     """Builds a module with a single main function from a checked ProgramNode."""
 
     def __init__(self):
-        self.module = ir.Module(name="practice5")
+        # A context of our own: named struct types live in the context, and the global one
+        # would keep a %"Point" from an earlier module in the same process.
+        self.context = ir.Context()
+        self.module = ir.Module(name="practice6", context=self.context)
         self.module.triple = llvm.get_default_triple()
+        self.types = dict(LLVM_TYPE)      # type name -> LLVM type: built-ins, then each struct
+        self.structs = {}                 # struct name -> StructNode, for its fields' types
 
         self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
         self.entry = self.function.append_basic_block("entry")
@@ -91,9 +104,13 @@ class CodeGen:
             self.builder.position_at_start(self.entry)
         else:
             self.builder.position_after(self.last_slot)          # declaration order
-        self.last_slot = self.builder.alloca(LLVM_TYPE[decl.type_name], name=decl.name)
+        self.last_slot = self.builder.alloca(self.types[decl.type_name], name=decl.name)
         self.builder.position_at_end(here)
         return self.last_slot
+
+    def gep(self, ptr, indices, name):
+        """A pointer to a field: 0 to step through `ptr`, then one index per link."""
+        return self.builder.gep(ptr, [ir.Constant(I32, i) for i in (0, *indices)], name=name)
 
     def coerce(self, value, have, want):
         """The language's one implicit conversion, made explicit."""
@@ -104,20 +121,37 @@ class CodeGen:
     # -- statements: emit IR, return nothing --------------------------------
 
     def visit_program(self, node):
+        for struct in node.structs:
+            struct.accept(self)
         for stmt in node.statements:
             stmt.accept(self)
         node.exit.accept(self)
 
+    def visit_struct(self, node):
+        struct_type = self.context.get_identified_type(node.name)
+        # Every field type is built in or a struct above, so it is already in self.types.
+        struct_type.set_body(*(self.types[field.type_name] for field in node.fields))
+        self.types[node.name] = struct_type
+        self.structs[node.name] = node
+
     def visit_decl(self, node):
-        value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
         ptr = self.alloca_in_entry(node)
-        self.builder.store(value, ptr)                           # the store stays where we are
         self.slots[node] = ptr
+        struct = self.structs.get(node.type_name)
+        if struct is None or node.copy:                          # one value: a number or a whole object
+            value = node.values[0]
+            self.builder.store(self.coerce(value.accept(self), value.type, node.type_name), ptr)
+            return
+        for field, value in zip(struct.fields, node.values):     # Point p{10, 20}: field by field
+            field_ptr = self.gep(ptr, [field.index], name=f"{node.name}.{field.name}")
+            self.builder.store(self.coerce(value.accept(self), value.type, field.type_name), field_ptr)
 
     def visit_assign(self, node):
-        want = node.decl.type_name
-        value = self.coerce(node.value.accept(self), node.value.type, want)
-        self.builder.store(value, self.slots[node.decl])
+        value = self.coerce(node.value.accept(self), node.value.type, node.target_type)
+        ptr = self.slots[node.decl]
+        if node.indices:                                         # c.center.x := ...
+            ptr = self.gep(ptr, node.indices, name=chain(node.name, node.links))
+        self.builder.store(value, ptr)                           # a whole object is one store too
 
     def visit_if(self, node):
         cond = node.condition.accept(self)                       # an i1, in the current block
@@ -202,6 +236,10 @@ class CodeGen:
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])
+
+    def visit_field(self, node):
+        ptr = self.gep(self.slots[node.decl], node.indices, name=chain(node.name, node.links))
+        return self.builder.load(ptr)
 
     def visit_bool(self, node):
         return ir.Constant(I1, 1 if node.value else 0)

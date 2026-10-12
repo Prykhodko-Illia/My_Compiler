@@ -1,0 +1,19 @@
+Program
+  Struct Point
+    FieldDecl x i32 mut
+    FieldDecl y i32 mut
+  Struct Circle
+    FieldDecl center Point const
+    FieldDecl radius i32 mut
+  Decl p Point const
+    Const 10
+    Const 20
+  Decl c Circle mut
+    Var p
+    Const 5
+  Assign c.radius
+    BinOp +
+      Field c.radius
+      Field c.center.y
+  Exit
+    Field c.radius

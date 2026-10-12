@@ -1,0 +1,12 @@
+struct Counter
+{
+    i32 mut n
+    i64 mut total
+}
+Counter mut c{0, 0}
+while c.n != 5
+{
+    c.n := c.n + 1
+    c.total := c.total + c.n
+}
+exit c.total

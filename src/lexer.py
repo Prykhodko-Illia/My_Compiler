@@ -20,12 +20,13 @@ from .errors import CompileError
 
 @dataclass
 class Token:
-    kind: str        # keyword | identifier | constant | block | operator | endline
+    kind: str        # keyword | identifier | constant | block | operator | separator | endline
     text: str
     line: int
     col: int         # 1-based position of the token's first byte
-    sub: str = ""    # typename | specifier | statement | branch | loop | boolean | numeric
-                     # start | end | assign | plus | minus | times | eq | ne | not
+    sub: str = ""    # typename | specifier | statement | branch | loop | definition | boolean
+                     # numeric | start | end | assign | plus | minus | times | eq | ne | not
+                     # dot | comma
 
     def __str__(self):
         text = "\\n" if self.kind == "endline" else self.text
@@ -42,6 +43,7 @@ KEYWORDS = {
     b"if": "branch",
     b"else": "branch",
     b"while": "loop",
+    b"struct": "definition",
     b"true": "boolean",
     b"false": "boolean",
 }
@@ -52,6 +54,8 @@ SINGLE_BYTE = {                  # tokens that are complete after one byte
     ord("+"): ("operator", "plus"),
     ord("-"): ("operator", "minus"),
     ord("*"): ("operator", "times"),
+    ord("."): ("operator", "dot"),          # c.center.x
+    ord(","): ("separator", "comma"),       # Point p{10, 20}
 }
 
 SPACE, TAB, NEWLINE = 32, 9, 10

@@ -1,0 +1,22 @@
+Program
+  Struct Counter
+    FieldDecl n i32 mut
+    FieldDecl total i64 mut
+  Decl c Counter mut
+    Const 0
+    Const 0
+  While
+    BinOp !=
+      Field c.n
+      Const 5
+    Block
+      Assign c.n
+        BinOp +
+          Field c.n
+          Const 1
+      Assign c.total
+        BinOp +
+          Field c.total
+          Field c.n
+  Exit
+    Field c.total
