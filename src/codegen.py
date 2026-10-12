@@ -25,6 +25,26 @@ terminator -- br, or the ret of an exit -- and nothing after it.
 A while is three blocks: cond, which the loop returns to, body and end. The body ends with
 a br back to cond -- the one edge in the IR that points backwards.
 
+Every function of the program becomes a function of the module, named with a prefix --
+fn_check, fn_fib -- so a function called main or printf cannot clash with the runtime's.
+All of them are declared before any body is built, so a call can name a function whose
+body does not exist yet (itself, or one below). Each has its own entry block; its
+parameters are stored into slots there, like declarations, so a body reads a parameter
+with a load like any variable. exit in a function is ret of its value; exit at the top
+level is the printf and ret 0 of main, as before. The top-level statements are main.
+
+A struct is a named type, %"Point" = type {i32, i32}, and an object is one alloca of it.
+A field is reached with gep: index 0 steps through the pointer to the object itself, then
+one index per link of the chain, so c.center.x is one gep with indices 0, 0, 0. The
+indices come from the semantic pass; nothing here looks a field up by name. A whole
+object moves as one value -- a load of %"Point" and a store of it -- which is how
+Point q{p} copies and how an object lands in a struct-typed field.
+
+An inner {} -- the {10, 20} of Circle c{{10, 20}, 5} -- is not an object in memory but one
+value of the struct type, built in registers: it starts as undef and each field goes in
+with insertvalue, by index. The outer {} still writes the object's fields with gep and
+store; an inner one is just a value that lands in one of them.
+
 Every alloca goes to the entry block, wherever the builder is when the declaration is met:
 a slot made inside then would not exist on the else path, a slot made inside a loop body
 would take more stack on every pass, and LLVM promotes only entry-block allocas to
@@ -34,26 +54,37 @@ registers (opt -passes=mem2reg).
 from llvmlite import ir
 import llvmlite.binding as llvm
 
+from .ast_nodes import chain
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
 
-LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}
+LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}     # the structs join it per module
 
 I8_PTR = ir.PointerType(I8)
 
+FN_PREFIX = "fn_"                 # fn main := ... becomes @fn_main, not a second @main
+
 
 class CodeGen:
-    """Builds a module with a single main function from a checked ProgramNode."""
+    """Builds a module from a checked ProgramNode: one function per fn, and main."""
 
     def __init__(self):
-        self.module = ir.Module(name="practice5")
+        # A context of our own: named struct types live in the context, and the global one
+        # would keep a %"Point" from an earlier module in the same process.
+        self.context = ir.Context()
+        self.module = ir.Module(name="practice6", context=self.context)
         self.module.triple = llvm.get_default_triple()
+        self.types = dict(LLVM_TYPE)      # type name -> LLVM type: built-ins, then each struct
+        self.structs = {}                 # struct name -> StructNode, for its fields' types
 
-        self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
-        self.entry = self.function.append_basic_block("entry")
-        self.builder = ir.IRBuilder(self.entry)
+        # The function being built. begin_function() sets all four; each function has its
+        # own entry block and its own run of allocas at its top.
+        self.function = self.entry = self.builder = None
         self.last_slot = None      # the last alloca in entry: the next one goes after it
+        self.current_fn = None     # the FnNode being built, or None for main
+
+        self.fns = {}              # FnNode -> its ir.Function, every one before any body
 
         self.printf = ir.Function(
             self.module,
@@ -84,6 +115,13 @@ class CodeGen:
         program.accept(self)
         return self.module
 
+    def begin_function(self, function, fn_node):
+        """Point the builder at a fresh function: its own entry block, its own slots."""
+        self.function, self.current_fn = function, fn_node
+        self.entry = function.append_basic_block("entry")
+        self.builder = ir.IRBuilder(self.entry)
+        self.last_slot = None
+
     def alloca_in_entry(self, decl):
         """A slot for `decl` at the top of the entry block, then back to where we were."""
         here = self.builder.block
@@ -91,9 +129,13 @@ class CodeGen:
             self.builder.position_at_start(self.entry)
         else:
             self.builder.position_after(self.last_slot)          # declaration order
-        self.last_slot = self.builder.alloca(LLVM_TYPE[decl.type_name], name=decl.name)
+        self.last_slot = self.builder.alloca(self.types[decl.type_name], name=decl.name)
         self.builder.position_at_end(here)
         return self.last_slot
+
+    def gep(self, ptr, indices, name):
+        """A pointer to a field: 0 to step through `ptr`, then one index per link."""
+        return self.builder.gep(ptr, [ir.Constant(I32, i) for i in (0, *indices)], name=name)
 
     def coerce(self, value, have, want):
         """The language's one implicit conversion, made explicit."""
@@ -104,20 +146,55 @@ class CodeGen:
     # -- statements: emit IR, return nothing --------------------------------
 
     def visit_program(self, node):
+        for struct in node.structs:
+            struct.accept(self)
+        for fn in node.fns:                                      # every signature first...
+            fn_type = ir.FunctionType(self.types[fn.result_type],
+                                      [self.types[param.type_name] for param in fn.params])
+            self.fns[fn] = ir.Function(self.module, fn_type, name=FN_PREFIX + fn.name)
+        for fn in node.fns:                                      # ...then the bodies
+            fn.accept(self)
+
+        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.begin_function(main, None)
         for stmt in node.statements:
             stmt.accept(self)
         node.exit.accept(self)
 
+    def visit_fn(self, node):
+        function = self.fns[node]
+        self.begin_function(function, node)
+        for param, arg in zip(node.params, function.args):      # a parameter is a copy in a slot
+            arg.name = param.name
+            self.slots[param] = self.alloca_in_entry(param)
+            self.builder.store(arg, self.slots[param])
+        node.body.accept(self)                                   # its last line is an exit: a ret
+
+    def visit_struct(self, node):
+        struct_type = self.context.get_identified_type(node.name)
+        # Every field type is built in or a struct above, so it is already in self.types.
+        struct_type.set_body(*(self.types[field.type_name] for field in node.fields))
+        self.types[node.name] = struct_type
+        self.structs[node.name] = node
+
     def visit_decl(self, node):
-        value = self.coerce(node.init.accept(self), node.init.type, node.type_name)
         ptr = self.alloca_in_entry(node)
-        self.builder.store(value, ptr)                           # the store stays where we are
         self.slots[node] = ptr
+        struct = self.structs.get(node.type_name)
+        if struct is None or node.copy:                          # one value: a number or a whole object
+            value = node.values[0]
+            self.builder.store(self.coerce(value.accept(self), value.type, node.type_name), ptr)
+            return
+        for field, value in zip(struct.fields, node.values):     # Point p{10, 20}: field by field
+            field_ptr = self.gep(ptr, [field.index], name=f"{node.name}.{field.name}")
+            self.builder.store(self.coerce(value.accept(self), value.type, field.type_name), field_ptr)
 
     def visit_assign(self, node):
-        want = node.decl.type_name
-        value = self.coerce(node.value.accept(self), node.value.type, want)
-        self.builder.store(value, self.slots[node.decl])
+        value = self.coerce(node.value.accept(self), node.value.type, node.target_type)
+        ptr = self.slots[node.decl]
+        if node.indices:                                         # c.center.x := ...
+            ptr = self.gep(ptr, node.indices, name=chain(node.name, node.links))
+        self.builder.store(value, ptr)                           # a whole object is one store too
 
     def visit_if(self, node):
         cond = node.condition.accept(self)                       # an i1, in the current block
@@ -164,9 +241,13 @@ class CodeGen:
             node.exit.accept(self)
 
     def visit_exit(self, node):
-        # printf and ret wherever the exit stands -- in entry, in an arm or in a merge. The
-        # ret terminates the current block, so an if around it adds no br.
+        # A ret wherever the exit stands -- in entry, in an arm or in a merge. The ret
+        # terminates the current block, so an if around it adds no br.
         value = node.value.accept(self)
+        if self.current_fn is not None:                          # in a function: its result
+            self.builder.ret(self.coerce(value, node.value.type, self.current_fn.result_type))
+            return
+        # at the top level: print, and end the program
         if node.value.type == "bool":
             word = self.builder.select(value,
                                        self.builder.bitcast(self.word_true, I8_PTR),
@@ -202,6 +283,25 @@ class CodeGen:
 
     def visit_var(self, node):
         return self.builder.load(self.slots[node.decl])
+
+    def visit_field(self, node):
+        ptr = self.gep(self.slots[node.decl], node.indices, name=chain(node.name, node.links))
+        return self.builder.load(ptr)
+
+    def visit_call(self, node):
+        args = [self.coerce(arg.accept(self), arg.type, param.type_name)    # an i32 into an i64 parameter
+                for param, arg in zip(node.fn.params, node.args)]
+        return self.builder.call(self.fns[node.fn], args, name=node.name)
+
+    def visit_init(self, node):
+        if node.copy:                                            # {p}: the whole object
+            return node.values[0].accept(self)
+        struct = self.structs[node.type]
+        value = ir.Constant(self.types[node.type], ir.Undefined) # nothing in it yet
+        for field, part in zip(struct.fields, node.values):     # an InitNode part recurses here
+            part_value = self.coerce(part.accept(self), part.type, field.type_name)
+            value = self.builder.insert_value(value, part_value, field.index)
+        return value
 
     def visit_bool(self, node):
         return ir.Constant(I1, 1 if node.value else 0)

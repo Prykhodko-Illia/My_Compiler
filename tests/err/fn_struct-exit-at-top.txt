@@ -1,0 +1,10 @@
+struct P
+{
+    i32 x
+}
+fn f := (i32 a) -> P
+{
+    P p{a}
+    exit p
+}
+exit f(1)

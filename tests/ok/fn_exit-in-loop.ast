@@ -1,0 +1,27 @@
+Program
+  Fn find -> i32
+    Param limit i32
+    Block
+      Decl i i32 mut
+        Const 0
+      While
+        Bool true
+        Block
+          Assign i
+            BinOp +
+              Var i
+              Const 1
+          If
+            BinOp ==
+              BinOp *
+                Var i
+                Const 3
+              Var limit
+            Block
+              Exit
+                Var i
+      Exit
+        Const 0
+  Exit
+    Call find
+      Const 30

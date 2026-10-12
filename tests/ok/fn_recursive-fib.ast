@@ -1,0 +1,33 @@
+Program
+  Fn fib -> i32
+    Param n i32
+    Block
+      If
+        BinOp ==
+          Var n
+          Const 0
+        Block
+          Exit
+            Const 0
+      If
+        BinOp ==
+          Var n
+          Const 1
+        Block
+          Exit
+            Const 1
+      Decl result i32 const
+        BinOp +
+          Call fib
+            BinOp -
+              Var n
+              Const 1
+          Call fib
+            BinOp -
+              Var n
+              Const 2
+      Exit
+        Var result
+  Exit
+    Call fib
+      Const 10

@@ -1,0 +1,50 @@
+Program
+  Struct Point
+    FieldDecl x i32 mut
+    FieldDecl y i32 mut
+  Fn isZero -> bool
+    Param p Point
+    Block
+      Decl z bool const
+        BinOp ==
+          Field p.x
+          Const 0
+      Exit
+        Var z
+  Fn below -> bool
+    Param v i32
+    Param limit i32
+    Block
+      Decl b bool const
+        BinOp !=
+          Var v
+          Var limit
+      Exit
+        Var b
+  Decl p Point mut
+    Const 0
+    Const 0
+  Decl steps i32 mut
+    Const 0
+  While
+    Call below
+      Field p.x
+      Const 4
+    Block
+      Assign p.x
+        BinOp +
+          Field p.x
+          Const 1
+      Assign steps
+        BinOp +
+          Var steps
+          Const 10
+  If
+    Not
+      Call isZero
+        Var p
+    Block
+      Exit
+        Var steps
+  Exit
+    Const 0

@@ -1,0 +1,1 @@
+compilation error: line 11:18: 'c.radius' is i64, not a struct: it takes a value, not {}

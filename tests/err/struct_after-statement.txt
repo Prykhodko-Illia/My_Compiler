@@ -1,0 +1,6 @@
+i32 a{1}
+struct P
+{
+    i32 x
+}
+exit a

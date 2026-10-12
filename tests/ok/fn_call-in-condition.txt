@@ -1,0 +1,27 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+fn isZero := (Point p) -> bool
+{
+    bool z{p.x == 0}
+    exit z
+}
+fn below := (i32 v, i32 limit) -> bool
+{
+    bool b{v != limit}
+    exit b
+}
+Point mut p{0, 0}
+i32 mut steps{0}
+while below(p.x, 4)
+{
+    p.x := p.x + 1
+    steps := steps + 10
+}
+if !isZero(p)
+{
+    exit steps
+}
+exit 0

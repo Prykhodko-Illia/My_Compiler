@@ -21,6 +21,8 @@ source bytes ──lexer──► tokens ──parser──► AST ──semanti
 
 Since Practice 5 the language branches and loops: `if` / `else` and `while` with blocks, and `!`. A block of the source is a **scope** in the
 semantic pass and a run of **basic blocks** in the IR — two different things, kept apart on purpose.
+Since Practice 6 it has **structs** (your own types, with fields) and **functions** (with recursion), and a program
+has a fixed shape: structs, then functions, then statements, then `exit`.
 
 The grammar the parser follows is written down in [`grammar.ebnf`](grammar.ebnf).
 Nothing reaches the builder until the pass has approved the whole program.
@@ -166,17 +168,35 @@ folder that matches what it should do.
 
 ## 📜 The language
 
-One statement per line, and an `if` spreads over several. Three types: `i32` and `i64` are integers, `bool` is a
-boolean whose only literals are `true` and `false`. That's the whole language, cuh.
+One statement per line, and an `if` spreads over several. Three built-in types: `i32` and `i64` are integers,
+`bool` is a boolean whose only literals are `true` and `false`. On top of them, your own structs. That's the whole
+language, cuh.
+
+A program comes in a fixed order — **structs, then functions, then statements, then `exit`**:
+
+```
+struct Point                    fn moved := (Point p, i32 dx) -> Point
+{                               {
+    i32 mut x                       Point q{p.x + dx, p.y}
+    i32 mut y                       exit q
+}                               }
+struct Circle
+{                               Point p{10, 20}
+    Point center                Circle c{p, 5}
+    i32 mut radius              Point mut r{moved(p, 1)}
+}                               r := moved(r, 2)
+                                exit r.x                   → Program exit with result 13
+```
 
 | Statement | Example | What it does |
 |---|---|---|
 | const declaration | `i32 x{5}` · `bool b{true}` | declares `x`; the initialiser in `{}` is mandatory |
 | mut declaration | `i64 mut y{10}` | declares `y`, which can be reassigned; `mut` comes after the type name |
-| assignment | `y := x * 3 + 1` | only a `mut` variable may be assigned |
+| object declaration | `Point p{10, 20}` · `Point q{p}` | one value per field, in field order — or one whole object of the same struct, which is copied |
+| assignment | `y := x * 3 + 1` · `c.radius := 5` | writes a variable, a field, or a whole object; see the `mut` rules below |
 | if / else | see below | runs the first block when the `bool` condition is true, else the second; `else` is optional |
 | while | see below | runs the block again and again while the `bool` condition is true |
-| exit | `exit y` · `exit 42` · `exit !b` | prints `Program exit with result <value>` and ends the program; it is the last line of its block, and the program ends with one |
+| exit | `exit y` · `exit 42` · `exit !b` · `exit fib(10)` | at the top level: prints `Program exit with result <value>` and ends the program. In a function: ends the function, and its value is the result. It is the last line of its block; the program and every function end with one |
 
 ```
 if b                        while i != 11
@@ -196,6 +216,52 @@ else                        }
 - A block is a scope. A name declared inside is gone after the `}`, and a block may declare a name that already
   exists outside it, with any type — that's shadowing. A name means the innermost declaration of it.
 
+**Structs**
+
+- `struct Name`, then `{`, one field per line (`Type [mut] name`), then `}`. At least one field.
+- A field's type is built in, or a struct declared **above** — so a struct can never contain itself.
+- A field is reached with `.`, at any depth: `c.center.x`. A field chain can stand wherever a variable can,
+  and to the left of `:=`.
+- A field without `mut` gets its value only when the object is created. So:
+  - writing through `x.a.b` needs **every link** to be `mut` — the variable, `a` and `b`;
+  - `:=` on a whole object (or on a struct-typed field) needs every field inside it, at every depth, to be `mut`.
+- A struct field can get its own `{}` inside the outer one, at any depth, with the same rules — one value per
+  field, in order, or one whole object: `Circle c{{10, 20}, 5}`, `Ring g{{{10, 20}, r}, {{10, 20}, 2}}`. A `{}`
+  where a built-in value belongs (`Point p{{1, 2}, 3}`) is an error at that `{`.
+- Objects are values: `Point q{p}` copies `p`, and so does passing it to a function or returning it. Changing
+  `p` afterwards leaves `q` alone.
+- An object can't be printed by `exit`, compared with `==`, or used in arithmetic.
+
+**Functions**
+
+```
+fn fib := (i32 n) -> i32
+{
+    if n == 0
+    {
+        exit 0
+    }
+    if n == 1
+    {
+        exit 1
+    }
+    i32 result{fib(n - 1) + fib(n - 2)}
+    exit result
+}
+exit fib(10)
+```
+
+- `fn name := (Type a, Type b, ...) -> Type`, then a block whose **last line is `exit`**. Any number of
+  parameters, including none. Parameter and result types are built in or structs.
+- `exit` in a function ends it, and its value is the result — of the result type (an `i32` may widen into an
+  `i64` result). An `exit` inside an `if` or a `while` ends the function early.
+- Parameters are copies and can't be changed, not even a field of one. The body sees its parameters, its own
+  variables and every function — **never a top-level variable**.
+- A function can call any function of the program: itself, or one declared below it.
+- A call `f(a, b)` can stand wherever a value can, with one argument per parameter (an `i32` may go into an
+  `i64` parameter). A call alone on a line isn't a statement. Functions and structs are declared only at the top
+  level, never inside a block.
+
 The rules:
 
 - An initialiser and the right-hand side of `:=` are an expression: any chain of constants and variables
@@ -213,14 +279,17 @@ The rules:
   `i32`, and a `bool` never meets an integer.
 - A constant takes the narrowest type it fits: `10` is `i32`, `3000000000` is `i64`, and anything past
   `9223372036854775807` is an error.
-- `exit` takes a single constant or variable — an integer or a bool, optionally under `!` — never an operation.
+- `exit` takes a single constant, variable, field chain or call — optionally under `!` — never an operation. At
+  the top level it must be an integer or a bool.
 - Names are ASCII letters, digits and `_`, and can't start with a digit. `i32`, `i64`, `bool`, `mut`, `exit`,
-  `if`, `else`, `while`, `true` and `false` are reserved.
+  `if`, `else`, `while`, `struct`, `fn`, `true` and `false` are reserved. Functions have names of their own:
+  a variable and a function may share one, since `f(...)` and `f` can't be confused.
 - A variable is declared once per block, before its first use, and can't appear in its own initialiser
   (in a block that shadows it, the initialiser reads the outer one).
 - Spaces and tabs separate tokens and are optional around `{`, `}`, `:=` and the operators. Blank lines are ignored.
-- Not in the language, so each of these is a compilation error: parentheses; `/`, `<`, `>` or any operator other
-  than `+ - * == != !`; a lone `=`; a sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`);
+- Not in the language, so each of these is a compilation error: grouping parentheses (they exist only in a
+  function's signature and in calls); `/`, `<`, `>` or any operator other than `+ - * == != !`; a lone `=`; a
+  sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`);
   two comparisons in one expression; two statements on one line; a declaration without `{}`; `{` on the `if` or
   `while` line;
   an empty block; anything after an `exit` in its block.
@@ -244,6 +313,31 @@ Program exit with result 385
 
 `exit` of a bool prints the word: `bool b{false}` then `exit b` gives `Program exit with result false`.
 
+And all of it together — the Practice 6 example, in [`tests/ok/program_task3-example.txt`](tests/ok/program_task3-example.txt):
+
+```
+struct Point                         fn moved := (Point p, i32 dx) -> Point
+{                                    {
+    i32 mut x                            Point q{p.x + dx, p.y}
+    i32 mut y                            exit q
+}                                    }
+struct Circle                        Point p{10, 20}
+{                                    Circle c{p, 5}
+    Point center                     i32 xCoord{c.center.x}
+    i32 mut radius                   bool z{isXZero(p)}
+}                                    Point mut r{moved(p, 1)}
+fn add := (i32 a, i32 b) -> i32      r := moved(r, 2)
+{                                    i32 result{add(xCoord, add(r.x, c.radius))}
+    i32 sum{a + b}                   exit result
+    exit sum
+}                                    Program exit with result 28
+fn isXZero := (Point p) -> bool
+{
+    bool zero{p.x == 0}
+    exit zero
+}
+```
+
 ---
 
 ## 🚨 Caught lacking: errors
@@ -261,9 +355,9 @@ have been typed.
 
 | Caught by | What gets you caught |
 |---|---|
-| lexer | an unknown byte (anything outside the language, including `(`, `/`, `<`, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=` |
-| parser | a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut` |
+| lexer | an unknown byte (anything outside the language, including `/`, `<`, `>` on its own, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=` |
+| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a function body that doesn't end with `exit`; a call alone on a line; a missing `,` or `)` in a signature or a call; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -274,12 +368,15 @@ have been typed.
 compiler.py         entry point: command-line arguments, --ast, --tokens, error reporting, writes output.ll
 grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
-  lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON, EQ, BANG)
+  lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON, EQ, BANG, MINUS)
   parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
-  ast_nodes.py      the tree: Node, ProgramNode, DeclNode, AssignNode, IfNode, WhileNode, BlockNode, ExitNode,
-                    BinOpNode, NotNode, VarNode, BoolNode, ConstNode
-  semantic.py       SemanticChecker: the walk that owns the scope stack, types every expression and rejects the rest
-  codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — basic blocks, cbranch, sext, icmp, select
+  ast_nodes.py      the tree: Node, ProgramNode, StructNode, FieldDeclNode, FnNode, ParamNode, DeclNode, AssignNode,
+                    IfNode, WhileNode, BlockNode, ExitNode, BinOpNode, NotNode, VarNode, FieldNode, CallNode,
+                    BoolNode, ConstNode
+  semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types
+                    every expression and rejects the rest
+  codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — functions, named struct types, gep,
+                    call, basic blocks, cbranch, sext, icmp, select
   errors.py         CompileError with line and column
 tests/ok/           programs that must compile, with their .expected output (and .ast files for some)
 tests/err/          programs that must fail, with their .expected error message
@@ -292,7 +389,8 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
 1. **Lexer** (`src/lexer.py`): one loop reads the source one byte at a time, with an explicit state.
    No regular expressions, no `split()`, no lexer generator. A word is checked against the keyword table
    only once it is complete. Every token records its kind, text, line and column.
-   `!` is the one state with two ways out: `=` makes `!=`, anything else makes a lone `!` and is read again.
+   `!` and `-` are the states with two ways out: `=` makes `!=` and `>` makes `->`, anything else makes a lone
+   `!` or `-` and is read again.
    `{` and `}` are plain tokens — the lexer doesn't pair them, the parser does.
    The result is a list of lines, each a list of tokens.
 2. **Parser** (`src/parser.py`): recursive descent, by hand, with two cursors. The line cursor walks the source:
@@ -300,8 +398,12 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
    cursor walks that line: `peek()` returns the current token, `eat()` returns it and moves on. There is one method
    per rule of `grammar.ebnf`. A declaration is one line; an `if` (or a `while`) reads its condition line, the
    `{` line, every line of the block and the `}` line — and the program and every block are read by the same loop, which is
-   why blocks nest for free. One token of look-ahead decides every choice: `i32` starts a declaration, `if` an
-   if, a name an assignment.
+   why blocks nest for free. The program itself is read in order: structs while the next line starts with
+   `struct`, functions while it starts with `fn`, then statements — so a struct or a function out of place reaches
+   the statement parser, which reports it at that line. One token of look-ahead decides almost every choice:
+   `i32` starts a declaration, `if` an if, a name followed by `(` a call and by `.` a field chain. The exception is
+   a line that starts with a name: `Point p{…}` is a declaration, `p := …` an assignment, so there the parser
+   looks at the second token — a name or `mut` means declaration.
    It reads tokens only, never the source text, and puts no token into the tree.
    Precedence needs no table: `parse_expr` calls `parse_term` before it looks for a `+`, so everything a `*`
    glues together is already one node by the time the `+` is seen. Each loop puts what it has so far in as the
@@ -321,8 +423,28 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
    declarations, and the generator never has to find out which is which. Everything it enforces — the type
    rules, a `bool` condition, a `bool` under `!`, declared before use, declared once per block, `mut` before
    `:=` — lives here and nowhere else.
-5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind, into a `main` function that
-   starts with an `entry` block. It trusts the tree and checks nothing.
+   - **Structs** go into a struct table in program order, so a field can only name a struct declared above. A
+     field chain like `c.center.x` is walked link by link — each link must exist, and for a write each must be
+     `mut` — and turned into **field numbers** stored on the node (`node.indices = [0, 0]`). The generator never
+     sees a field name.
+   - **Functions** are checked in two rounds: every signature first, then every body — which is what lets a
+     function call itself or one declared below it. A body gets a fresh scope stack whose bottom frame holds the
+     parameters, so a top-level variable simply isn't on it. A call checks its arguments against the parameters
+     and gets the result type; `exit` in a body checks against the result type. Calls carry `node.fn`.
+5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind. It trusts the tree and checks
+   nothing.
+   - Every `fn` becomes a function of the module, named with a prefix (`@fn_fib`), so a function called `main` or
+     `printf` can't clash with the real ones. All of them are declared before any body is built, so a `call` can
+     point at a body that doesn't exist yet. Each function gets its own `entry` block and builder; its parameters
+     are stored into slots there, so the body reads them with a plain `load`. The top-level statements become
+     `main`.
+   - A struct is a named type, `%"Point" = type {i32, i32}`, and an object is one `alloca` of it. A field is reached
+     with `getelementptr`: `0` to step through the pointer, then one index per link — `c.center.x` is
+     `gep %c, 0, 0, 0`. A whole object moves as one value: one `load` of `%"Point"` and one `store`, which is how
+     `Point q{p}` copies, and how objects are passed to and returned from functions.
+   - An inner `{}` (`Circle c{{10, 20}, 5}`) is not an object in memory but one value of the struct type, built in
+     registers: it starts as `undef`, and each field goes in with `insertvalue` by index — recursively for a
+     `{}` inside it. The finished value is stored into its field through the outer `gep`.
    - A declaration is an `alloca` of the declared type plus a `store` of the initialiser. The `alloca` always goes
      to the top of the `entry` block, whatever block the builder is in: a slot made inside `then` wouldn't exist
      on the `else` path, and `mem2reg` only promotes entry-block allocas. The `store` stays where it is.
@@ -344,9 +466,11 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
      `== !=`, and the `exit` value. Leave one out and the builder refuses the instruction on the spot.
    - A comparison is `icmp` with a signed predicate on two operands of the same width, producing the `i1` that a
      `bool` variable stores.
-   - `exit` calls `printf` (declared, not defined; the linker finds it in libc): an integer is widened to `i64` and
-     printed with `%lld`, a bool picks between two string constants with a `select` and prints with `%s`. Then
-     `ret 0` — wherever the `exit` stands, so an `exit` in an arm terminates that arm's block.
+   - `exit` in a function is `ret` of its value. At the top level it calls `printf` (declared, not defined; the
+     linker finds it in libc): an integer is widened to `i64` and printed with `%lld`, a bool picks between two
+     string constants with a `select` and prints with `%s`. Then `ret 0`. Either way it ends the block it stands
+     in, so an `exit` in an arm terminates that arm's block.
+   - A call is `call` with each argument coerced to its parameter's type.
 
 Every later phase is another walk over this same tree, and none of them touches the parser.
 

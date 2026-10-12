@@ -1,0 +1,18 @@
+Program
+  Struct W
+    FieldDecl big i64 mut
+    FieldDecl flag bool const
+  Decl w W const
+    Const 7
+    Bool true
+  Decl b i64 const
+    BinOp *
+      Field w.big
+      Const 3000000000
+  If
+    Field w.flag
+    Block
+      Exit
+        Var b
+  Exit
+    Const 0

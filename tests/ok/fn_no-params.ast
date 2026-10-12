@@ -1,0 +1,7 @@
+Program
+  Fn one -> i64
+    Block
+      Exit
+        Const 1
+  Exit
+    Call one

@@ -1,0 +1,15 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i32 mut radius
+}
+Point mut p{1, 2}
+Point q{p}
+p.x := 100
+i32 r{q.x + p.x}
+exit r
