@@ -1,0 +1,14 @@
+fn find := (i32 limit) -> i32
+{
+    i32 mut i{0}
+    while true
+    {
+        i := i + 1
+        if i * 3 == limit
+        {
+            exit i
+        }
+    }
+    exit 0
+}
+exit find(30)

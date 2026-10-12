@@ -1,0 +1,17 @@
+Program
+  Fn twice -> i64
+    Param v i64
+    Block
+      Decl r i64 const
+        BinOp *
+          Var v
+          Const 2
+      Exit
+        Var r
+  Decl small i32 const
+    Const 21
+  Decl big i64 const
+    Call twice
+      Var small
+  Exit
+    Var big

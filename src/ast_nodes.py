@@ -7,9 +7,11 @@ become flags -- "mut" is a boolean, "else" is whether else_block is set, the bra
 an initialiser and ":=" leave nothing behind (the braces of a block become a BlockNode).
 
     Node
-    +-- ProgramNode      structs: [StructNode], statements: [StmtNode], exit: ExitNode
+    +-- ProgramNode      structs: [StructNode], fns: [FnNode], statements: [StmtNode], exit: ExitNode
     +-- StructNode       name, fields: [FieldDeclNode]
     +-- FieldDeclNode    name, type_name, mutable  -- also carries `index`, from the semantic pass
+    +-- FnNode           name, params: [ParamNode], result_type, body: BlockNode
+    +-- ParamNode        name, type_name   -- a declaration: never mut, so never assigned
     +-- StmtNode   (abstract)
     |   +-- DeclNode     name, type_name, mutable, values: [ExprNode]
     |   +-- AssignNode   name, links: [Link], value: ExprNode
@@ -22,6 +24,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- NotNode      operand: ExprNode
         +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
         +-- FieldNode    name, links: [Link]   -- c.center.x: the variable, then each field
+        +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
         +-- BoolNode     value (True / False)
         +-- ConstNode    value
 
@@ -37,7 +40,9 @@ their names are.
 
 The semantic pass writes, and the code generator reads -- which is their whole contract:
   * `type` on every expression node;
-  * `decl` on every VarNode, FieldNode and AssignNode (the DeclNode the name resolved to);
+  * `decl` on every VarNode, FieldNode and AssignNode (the DeclNode or ParamNode the name
+    resolved to);
+  * `fn` on every CallNode (the FnNode it calls);
   * `indices` on every FieldNode and AssignNode: the field chain as field numbers, so
     c.center.x is [0, 0] -- the generator never looks a field up by name;
   * `target_type` on every AssignNode: the type of what is written, the variable's or
@@ -100,9 +105,10 @@ class ExprNode(Node):
 
 
 class ProgramNode(Node):
-    def __init__(self, line, col, structs, statements, exit):
+    def __init__(self, line, col, structs, fns, statements, exit):
         super().__init__(line, col)
-        self.structs = structs            # [StructNode], all of them before the statements
+        self.structs = structs            # [StructNode], first
+        self.fns = fns                    # [FnNode], after the structs, before the statements
         self.statements = statements      # [StmtNode]
         self.exit = exit                  # ExitNode
 
@@ -110,7 +116,7 @@ class ProgramNode(Node):
         return "Program"
 
     def children(self):
-        return [*self.structs, *self.statements, self.exit]
+        return [*self.structs, *self.fns, *self.statements, self.exit]
 
     def accept(self, visitor):
         return visitor.visit_program(self)
@@ -143,6 +149,40 @@ class FieldDeclNode(Node):
 
     def label(self):
         return f"FieldDecl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
+
+
+class FnNode(Node):
+    def __init__(self, line, col, name, params, result_type, result_at, body):
+        super().__init__(line, col)       # position of the name
+        self.name = name
+        self.params = params              # [ParamNode], maybe none
+        self.result_type = result_type    # the type after '->'
+        self.result_at = result_at        # (line, col) of that type
+        self.body = body                  # BlockNode: its last line is an exit
+
+    def label(self):
+        return f"Fn {self.name} -> {self.result_type}"
+
+    def children(self):
+        return [*self.params, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_fn(self)
+
+
+class ParamNode(Node):
+    """A parameter. It stands where a DeclNode would for a name: VarNode.decl may be one,
+    and the generator keys its slot by it the same way."""
+
+    def __init__(self, line, col, name, type_name, type_at):
+        super().__init__(line, col)       # position of the name
+        self.name = name
+        self.type_name = type_name
+        self.type_at = type_at            # (line, col) of the type
+        self.mutable = False              # parameters are copies and cannot be changed
+
+    def label(self):
+        return f"Param {self.name} {self.type_name}"
 
 
 class DeclNode(StmtNode):
@@ -221,12 +261,14 @@ class WhileNode(StmtNode):
 
 class BlockNode(Node):
     """The lines between '{' and '}'. Not a statement of its own: it only follows an if,
-    an else or a while. It may end with an exit, like the program does."""
+    an else, a while or a function's signature. It may end with an exit, like the program
+    does; a function's body must."""
 
-    def __init__(self, line, col, statements, exit):
+    def __init__(self, line, col, statements, exit, close):
         super().__init__(line, col)       # position of the '{'
         self.statements = statements      # [StmtNode], at least one line in all
         self.exit = exit                  # ExitNode, or None
+        self.close = close                # (line, col) of the '}'
 
     def label(self):
         return "Block"
@@ -313,6 +355,23 @@ class FieldNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_field(self)
+
+
+class CallNode(ExprNode):
+    def __init__(self, line, col, name, args):
+        super().__init__(line, col)       # position of the function's name
+        self.name = name
+        self.args = args                  # [ExprNode]
+        self.fn = None                    # FnNode, set by the semantic pass
+
+    def label(self):
+        return f"Call {self.name}"
+
+    def children(self):
+        return self.args
+
+    def accept(self, visitor):
+        return visitor.visit_call(self)
 
 
 class BoolNode(ExprNode):

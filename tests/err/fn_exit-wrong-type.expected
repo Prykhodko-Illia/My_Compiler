@@ -1,0 +1,1 @@
+compilation error: line 3:5: function 'f' returns bool, but exit has i32

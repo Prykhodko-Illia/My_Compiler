@@ -13,6 +13,14 @@ type: shadowing. A use walks the frames from the top down and takes the first hi
 in no frame, including one whose frame has already been popped, is used before its
 declaration.
 
+A function body gets a stack of its own: its bottom frame holds the parameters, and the
+body's own lines go into that same frame, so a parameter cannot be declared again. The
+program's frames are not on that stack -- a function sees its parameters, its variables
+and the functions, never a top-level variable.
+
+Functions sit in a table of their own, name -> FnNode. It is filled with every signature
+before any body is checked, so a function may call itself or one declared below it.
+
 Next to it sits the struct table, name -> StructNode, filled in program order: a field
 may only have a built-in type or a struct declared above it, so a struct can never
 contain itself, directly or through another one.
@@ -22,7 +30,8 @@ Its contract with the code generator is a handful of fields on the tree:
   * `node.decl` on every VarNode, FieldNode and AssignNode -- the declaration the name
     resolved to;
   * `node.indices` on every FieldNode and AssignNode -- the field chain as field numbers;
-  * `node.target_type` on every AssignNode, `node.copy` on every DeclNode.
+  * `node.target_type` on every AssignNode, `node.copy` on every DeclNode;
+  * `node.fn` on every CallNode -- the function it calls.
 The generator reads those and looks nothing up -- not a variable by its name, not a
 field by its name. With shadowing that matters: three x in three scopes are three
 declarations, and the pass is the one that knows which is meant.
@@ -35,7 +44,11 @@ The type rules:
     conversion in the language: never the other way round, never across bool;
   * ! takes a bool and gives a bool;
   * the condition of an if or a while is a bool;
-  * exit takes an integer or a bool.
+  * exit at the top level takes an integer or a bool; exit in a function takes a value of
+    its result type, which may be a struct;
+  * a call has its function's result type, and takes one argument per parameter, each
+    assignable to the parameter's type -- so an i32 may go into an i64 parameter;
+  * a parameter is never mut.
 
 The struct rules:
   * an object takes one value per field, in field order, each one assignable to the
@@ -46,7 +59,7 @@ The struct rules:
     at every depth, is mut: a const field gets its value only when the object is created.
 """
 
-from .ast_nodes import ConstNode, chain
+from .ast_nodes import ConstNode, DeclNode, ParamNode, chain
 from .errors import CompileError, error_at
 
 I32_MAX = 2**31 - 1
@@ -63,6 +76,9 @@ class SemanticChecker:
     def __init__(self):
         self.scopes = [{}]                # frames, innermost last: name -> DeclNode
         self.structs = {}                 # name -> StructNode, in declaration order
+        self.fns = {}                     # name -> FnNode, every signature before any body
+        self.current_fn = None            # the FnNode whose body is being checked, or None
+        self.top_level_names = set()      # names the program declares outside any block
 
     def run(self, program):
         program.accept(self)
@@ -73,6 +89,9 @@ class SemanticChecker:
         for frame in reversed(self.scopes):
             if name in frame:
                 return frame[name]
+        if self.current_fn is not None and name in self.top_level_names:
+            raise error_at(node, f"function '{self.current_fn.name}' cannot see the top-level variable "
+                                 f"'{name}': a function sees only its parameters and its own variables")
         raise error_at(node, f"variable '{name}' is used before its declaration")
 
     def check_type(self, node):
@@ -95,6 +114,8 @@ class SemanticChecker:
         type at the end. With check_mut, every link must be mut -- a write."""
         decl = self.lookup(node, node.name)
         target, path, type_name = chain(node.name, node.links), node.name, decl.type_name
+        if check_mut and isinstance(decl, ParamNode):
+            raise error_at(node, f"cannot assign to '{target}': '{node.name}' is a parameter, and parameters cannot be changed")
         if check_mut and not decl.mutable:
             if not node.links:
                 raise error_at(node, f"cannot assign to '{target}': it is not mut")
@@ -121,23 +142,55 @@ class SemanticChecker:
                 return f"{field.name}.{inner}"
         return None
 
-    def check_assignable(self, expr, want, at, what):
+    def check_assignable(self, expr, want, at, what, message=None):
         """Is a value of type expr.type allowed where a `want` is expected?"""
         have = expr.type
         if have == want or (have == "i32" and want == "i64"):
             return                        # the one widening the language does for you
         if isinstance(expr, ConstNode) and have == "i64" and want == "i32":
             raise error_at(expr, f"constant {expr.value} does not fit in i32")
-        raise error_at(at, f"cannot {what} of type {want} with a value of type {have}")
+        raise error_at(at, message or f"cannot {what} of type {want} with a value of type {have}")
 
     # -- statements ---------------------------------------------------------
 
     def visit_program(self, node):
         for struct in node.structs:
             struct.accept(self)
+        # The bodies are checked before the statements, so the top-level names are collected
+        # first -- only to say why such a name is not visible inside a function.
+        self.top_level_names = {s.name for s in node.statements if isinstance(s, DeclNode)}
+        for fn in node.fns:               # first every signature...
+            self.declare_fn(fn)
+        for fn in node.fns:               # ...then every body, which may call any of them
+            fn.accept(self)
         for stmt in node.statements:
             stmt.accept(self)
         node.exit.accept(self)
+
+    def declare_fn(self, node):
+        if node.name in self.fns:
+            prev = self.fns[node.name]
+            raise error_at(node, f"function '{node.name}' is already declared at line {prev.line}:{prev.col}")
+        names = set()
+        for param in node.params:
+            if param.name in names:
+                raise error_at(param, f"function '{node.name}' already has a parameter '{param.name}'")
+            self.check_type(param)
+            names.add(param.name)
+        if node.result_type not in BUILT_IN and node.result_type not in self.structs:
+            raise CompileError(*node.result_at, f"unknown type '{node.result_type}'")
+        self.fns[node.name] = node
+
+    def visit_fn(self, node):
+        outer = self.scopes
+        # A fresh stack: the parameters, and the body's lines in the same frame. Nothing of
+        # the program's frames is on it, so a top-level variable is not visible here.
+        self.scopes = [{param.name: param for param in node.params}]
+        self.current_fn = node
+        for stmt in node.body.statements:
+            stmt.accept(self)
+        node.body.exit.accept(self)
+        self.scopes, self.current_fn = outer, None
 
     def visit_struct(self, node):
         if node.name in self.structs:
@@ -214,7 +267,11 @@ class SemanticChecker:
 
     def visit_exit(self, node):
         value = node.value.accept(self)
-        if value not in BUILT_IN:         # printf has no format for a whole object
+        fn = self.current_fn
+        if fn is not None:                # in a function: the result, of the result type
+            self.check_assignable(node.value, fn.result_type, node, None,
+                                  f"function '{fn.name}' returns {fn.result_type}, but exit has {value}")
+        elif value not in BUILT_IN:       # printf has no format for a whole object
             raise error_at(node, f"exit takes an integer or a bool, got {value}")
 
     # -- expressions: return the type, and store it on the node -------------
@@ -246,6 +303,21 @@ class SemanticChecker:
 
     def visit_field(self, node):
         node.type = self.walk_chain(node)
+        return node.type
+
+    def visit_call(self, node):
+        fn = self.fns.get(node.name)
+        if fn is None:
+            raise error_at(node, f"function '{node.name}' is not declared")
+        if len(node.args) != len(fn.params):
+            raise error_at(node, f"function '{fn.name}' takes {plural(len(fn.params), 'argument')}, "
+                                 f"got {len(node.args)}")
+        for param, arg in zip(fn.params, node.args):
+            arg.accept(self)
+            self.check_assignable(arg, param.type_name, arg, None,
+                                  f"argument '{param.name}' of '{fn.name}' is {param.type_name}, got {arg.type}")
+        node.fn = fn
+        node.type = fn.result_type
         return node.type
 
     def visit_bool(self, node):

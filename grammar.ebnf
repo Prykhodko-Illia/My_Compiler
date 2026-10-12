@@ -11,14 +11,16 @@
  *   "i32" "i64" "bool"    keyword tokens: the type names
  *   "mut" "exit"          keyword tokens
  *   "if" "else" "while"   keyword tokens
- *   "struct"              keyword token
+ *   "struct" "fn"         keyword tokens
  *   "true" "false"        keyword tokens: the boolean literals
  *   "{" "}"               block tokens
  *   ":=" "+" "-" "*"      operator tokens
  *   "==" "!="             operator tokens, two bytes each
  *   "!"                   operator token: a '!' not followed by '='
  *   "."                   operator token: a field of an object
- *   ","                   separator token: between the values of an initialiser
+ *   "->"                  operator token, two bytes: before a function's result type
+ *   ","                   separator token: between values, parameters and arguments
+ *   "(" ")"               separator tokens: only around parameters and arguments
  *   ident                 identifier token: letters, digits and _, not starting with a
  *                         digit, and not a keyword -- how it is spelled is the lexer's rule
  *   number                constant token: decimal digits, no sign
@@ -28,7 +30,8 @@
  * One line per declaration, assignment and exit. An if takes several: the condition
  * line, then "{", every line of the block and "}" each on a line of their own, and the
  * same again after an "else". A while takes the same shape, without the else. A struct
- * is its name line, "{", one line per field and "}". NL is written out wherever a line
+ * is its name line, "{", one line per field and "}"; a function is its signature line
+ * and a block. NL is written out wherever a line
  * must end; blank lines carry nothing and are skipped. The lexer does not pair the
  * braces -- this grammar does.
  *
@@ -40,14 +43,19 @@
  * if or a while and the operand of "!" are bools -- and every struct rule: that a type name
  * is a struct declared above, that a struct does not contain itself, that an object gets
  * one value per field, that a field chain names fields that exist, and that every link of
- * a chain written through is "mut".
+ * a chain written through is "mut" -- and every function rule: that a call names a
+ * declared function with one argument of the right type per parameter, that exit in a
+ * function has its result type, that a parameter is never assigned, and that a body sees
+ * no top-level variable.
  *)
 
-program   ::= { struct } { statement } exit
+program   ::= { struct } { fn } { statement } exit
 
 struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
 
 field_decl::= type [ "mut" ] ident NL
+
+fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
 statement ::= decl | assign | if | while
 
@@ -71,9 +79,11 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident | field | "!" factor
+factor    ::= number | "true" | "false" | ident | field | call | "!" factor
 
 field     ::= ident "." ident { "." ident }
+
+call      ::= ident "(" [ expr { "," expr } ] ")"
 
 (* Precedence and associativity come out of the shape of the last four rules, with no
  * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
@@ -83,13 +93,18 @@ field     ::= ident "." ident { "." ident }
  * far as the left child, so 10 - 3 - 2 parses as (10 - 3) - 2 -- left associativity.
  *
  * expr has no loop around the comparison, so at most one comparison per expression.
- * There are no parentheses in the language yet.
+ * Parentheses appear only in fn and call: there are still no grouping parentheses.
  *
  * "!" lives in factor, so it binds tighter than any operator and applies to the factor
  * right after it: !a == b compares !a with b. "!" factor recurses, so !!a is allowed.
  *
  * Note that exit takes a factor, not an expr: a single constant, boolean literal,
- * variable or field chain -- or one of those under "!" -- never an operation.
+ * variable, field chain or call -- or one of those under "!" -- never an operation.
+ *
+ * The order of program is fixed: structs, then functions, then statements. A function's
+ * block must end with exit, which the rule cannot say (a block's exit is optional), so the
+ * parser checks it. fn and struct are not statements, so neither can stand in a block.
+ * A call is a factor, not a statement: it can stand only where its value is used.
  *
  * type ::= ident is what makes a line starting with a name ambiguous: "Point p{...}" is a
  * decl, "p := ..." and "p.x := ..." are assigns. The second token decides -- a name or

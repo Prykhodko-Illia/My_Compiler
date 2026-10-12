@@ -2,9 +2,10 @@
 
 Recursive descent, written by hand: one method per rule of grammar.ebnf.
 
-  program   ::= { struct } { statement } exit
+  program   ::= { struct } { fn } { statement } exit
   struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
   field_decl::= type [ "mut" ] ident NL
+  fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
   statement ::= decl | assign | if | while
   decl      ::= type [ "mut" ] ident "{" expr { "," expr } "}"
   type      ::= "i32" | "i64" | "bool" | ident
@@ -16,8 +17,9 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   expr      ::= arith [ ( "==" | "!=" ) arith ]
   arith     ::= term { ( "+" | "-" ) term }
   term      ::= factor { "*" factor }
-  factor    ::= number | "true" | "false" | ident | field | "!" factor
+  factor    ::= number | "true" | "false" | ident | field | call | "!" factor
   field     ::= ident "." ident { "." ident }
+  call      ::= ident "(" [ expr { "," expr } ] ")"
 
 A comparison binds weaker than arithmetic, which is why expr sits above arith: in
 x * 2 != y + 5 each side is a whole arithmetic chain. There is no loop in expr, so at
@@ -34,14 +36,16 @@ shape as an if without the else.
 
 One token of look-ahead decides every choice but one: a line that starts with a name is
 a declaration when a second name or "mut" follows (Point p{...}, Point mut p{...}) and an
-assignment otherwise (p := ..., p.x := ...), so there the parser looks at two tokens. It
-never scans further through a line. It reads tokens only, never the source text, and puts
+assignment otherwise (p := ..., p.x := ...), so there the parser looks at two tokens. (A
+'(' second is a call standing alone, which is not a statement.) Inside an expression a
+name followed by '(' is a call, by '.' a field chain, by anything else a variable -- one
+token after the name, so still one token of look-ahead. It never scans further. It reads tokens only, never the source text, and puts
 no token into the tree.
 """
 
-from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, ConstNode,
-                        DeclNode, ExitNode, FieldDeclNode, FieldNode, IfNode, Link,
-                        NotNode, ProgramNode, StructNode, VarNode, WhileNode)
+from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ConstNode,
+                        DeclNode, ExitNode, FieldDeclNode, FieldNode, FnNode, IfNode, Link,
+                        NotNode, ParamNode, ProgramNode, StructNode, VarNode, WhileNode)
 from .errors import CompileError
 
 
@@ -115,16 +119,23 @@ class Parser:
     # -- one method per rule ------------------------------------------------
 
     def parse_program(self):
-        """program ::= { struct } { statement } exit"""
-        structs = []
-        while is_token(self.peek_line(), "keyword", "definition"):
+        """program ::= { struct } { fn } { statement } exit
+
+        The order is fixed. Each loop stops at the first line of another kind, so a struct
+        after a function, or either after a statement, reaches parse_statement -- which
+        reports it at that line."""
+        structs, fns = [], []
+        while is_token(self.peek_line(), "keyword", "definition", "struct"):
             self.next_line()
             structs.append(self.parse_struct())
+        while is_token(self.peek_line(), "keyword", "definition", "fn"):
+            self.next_line()
+            fns.append(self.parse_fn())
         statements, exit_node = self.parse_lines(None)
         if exit_node is None:
             raise CompileError(self.end[0], self.end[1], "program has no exit statement")
-        head = (structs or statements or [exit_node])[0]
-        return ProgramNode(head.line, head.col, structs, statements, exit_node)
+        head = (structs or fns or statements or [exit_node])[0]
+        return ProgramNode(head.line, head.col, structs, fns, statements, exit_node)
 
     def parse_struct(self):
         """struct ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL"""
@@ -151,11 +162,44 @@ class Parser:
         self.end_line("'}'")
         return StructNode(name.line, name.col, name.text, fields)
 
+    def parse_fn(self):
+        """fn ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block"""
+        self.eat()                                             # fn
+        name = self.expect("identifier", None, "a function name")
+        self.expect("operator", "assign", f"':=' after 'fn {name.text}'")
+        self.expect("separator", "open", "'(' before the parameters")
+        params = []
+        if not self.at("separator", "close"):
+            params.append(self.parse_param())
+            while self.at("separator", "comma"):
+                self.eat()
+                params.append(self.parse_param())
+        self.expect("separator", "close", "',' or ')' after a parameter")
+        self.expect("operator", "arrow", "'->' and the result type")
+        result = self.parse_type("the result type")
+        self.end_line("the result type")                       # fn f := () -> i32 {  -- its own line
+        body = self.parse_block(f"'fn {name.text}'")
+        if body.exit is None:
+            raise CompileError(*body.close, f"the body of '{name.text}' must end with exit")
+        return FnNode(name.line, name.col, name.text, params, result.text,
+                      (result.line, result.col), body)
+
+    def parse_param(self):
+        """type ident"""
+        type_token = self.parse_type("a parameter: a type and a name")
+        name = self.expect("identifier", None, "a parameter name")
+        return ParamNode(name.line, name.col, name.text, type_token.text,
+                         (type_token.line, type_token.col))
+
+    def parse_type(self, what):
+        """type ::= "i32" | "i64" | "bool" | ident"""
+        if not (self.at("keyword", "typename") or self.at("identifier")):
+            raise self.error(f"expected {what}, found {describe(self.peek())}")
+        return self.eat()
+
     def parse_field_decl(self):
         """field_decl ::= type [ "mut" ] ident NL"""
-        if not (self.at("keyword", "typename") or self.at("identifier")):
-            raise self.error(f"expected a field: a type and a name, found {describe(self.peek())}")
-        type_token = self.eat()
+        type_token = self.parse_type("a field: a type and a name")
         mutable = self.at("keyword", "specifier")
         if mutable:
             self.eat()
@@ -195,10 +239,14 @@ class Parser:
             node = self.parse_decl()
         elif self.at("identifier") and (is_token(second, "identifier") or is_token(second, "keyword", "specifier")):
             node = self.parse_decl()                           # Point p{...}: a struct type
+        elif self.at("identifier") and is_token(second, "separator", "open"):
+            raise self.error("a call alone is not a statement: its value has to go somewhere")
         elif self.at("identifier"):
             node = self.parse_assign()
-        elif self.at("keyword", "definition"):
-            raise self.error("a struct is declared at the top of the program, before every statement")
+        elif self.at("keyword", "definition", "struct"):
+            raise self.error("a struct is declared at the top of the program, before every function and statement")
+        elif self.at("keyword", "definition", "fn"):
+            raise self.error("a function is declared at the top level, after the structs and before every statement")
         elif self.at("keyword", "branch", "else"):
             raise self.error("'else' without an 'if'")
         elif self.at("block", "start"):
@@ -284,9 +332,9 @@ class Parser:
         if not statements and exit_node is None:
             raise self.error("empty block", brace)
         self.next_line()
-        self.eat()                                             # }
+        close = self.eat()                                     # }
         self.end_line("'}'")
-        return BlockNode(brace.line, brace.col, statements, exit_node)
+        return BlockNode(brace.line, brace.col, statements, exit_node, (close.line, close.col))
 
     def parse_exit(self):
         """exit ::= "exit" factor -- a constant or a variable, never an operation"""
@@ -320,8 +368,9 @@ class Parser:
         return node
 
     def parse_factor(self):
-        """factor ::= number | "true" | "false" | ident | field | "!" factor
-        field  ::= ident "." ident { "." ident }"""
+        """factor ::= number | "true" | "false" | ident | field | call | "!" factor
+        field  ::= ident "." ident { "." ident }
+        call   ::= ident "(" [ expr { "," expr } ] ")" """
         token = self.peek()
         if token is not None and token.kind == "constant":
             # How large a constant may be is a type question: the semantic pass decides,
@@ -333,6 +382,8 @@ class Parser:
             return BoolNode(token.line, token.col, token.text == "true")
         if token is not None and token.kind == "identifier":
             self.eat()
+            if self.at("separator", "open"):
+                return self.parse_call(token)
             links = self.parse_links()
             if links:
                 return FieldNode(token.line, token.col, token.text, links)
@@ -341,6 +392,18 @@ class Parser:
             self.eat()
             return NotNode(token.line, token.col, self.parse_factor())
         raise self.error(f"expected a constant or a variable, found {describe(token)}")
+
+    def parse_call(self, name):
+        """call ::= ident "(" [ expr { "," expr } ] ")"   -- the name is already eaten"""
+        self.eat()                                             # (
+        args = []
+        if not self.at("separator", "close"):
+            args.append(self.parse_expr())
+            while self.at("separator", "comma"):
+                self.eat()
+                args.append(self.parse_expr())
+        self.expect("separator", "close", f"',' or ')' in the call of '{name.text}'")
+        return CallNode(name.line, name.col, name.text, args)
 
 
 def is_token(token, kind, sub=None, text=None):

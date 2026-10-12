@@ -25,6 +25,14 @@ terminator -- br, or the ret of an exit -- and nothing after it.
 A while is three blocks: cond, which the loop returns to, body and end. The body ends with
 a br back to cond -- the one edge in the IR that points backwards.
 
+Every function of the program becomes a function of the module, named with a prefix --
+fn_check, fn_fib -- so a function called main or printf cannot clash with the runtime's.
+All of them are declared before any body is built, so a call can name a function whose
+body does not exist yet (itself, or one below). Each has its own entry block; its
+parameters are stored into slots there, like declarations, so a body reads a parameter
+with a load like any variable. exit in a function is ret of its value; exit at the top
+level is the printf and ret 0 of main, as before. The top-level statements are main.
+
 A struct is a named type, %"Point" = type {i32, i32}, and an object is one alloca of it.
 A field is reached with gep: index 0 steps through the pointer to the object itself, then
 one index per link of the chain, so c.center.x is one gep with indices 0, 0, 0. The
@@ -50,9 +58,11 @@ LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}     # the structs join it per m
 
 I8_PTR = ir.PointerType(I8)
 
+FN_PREFIX = "fn_"                 # fn main := ... becomes @fn_main, not a second @main
+
 
 class CodeGen:
-    """Builds a module with a single main function from a checked ProgramNode."""
+    """Builds a module from a checked ProgramNode: one function per fn, and main."""
 
     def __init__(self):
         # A context of our own: named struct types live in the context, and the global one
@@ -63,10 +73,13 @@ class CodeGen:
         self.types = dict(LLVM_TYPE)      # type name -> LLVM type: built-ins, then each struct
         self.structs = {}                 # struct name -> StructNode, for its fields' types
 
-        self.function = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
-        self.entry = self.function.append_basic_block("entry")
-        self.builder = ir.IRBuilder(self.entry)
+        # The function being built. begin_function() sets all four; each function has its
+        # own entry block and its own run of allocas at its top.
+        self.function = self.entry = self.builder = None
         self.last_slot = None      # the last alloca in entry: the next one goes after it
+        self.current_fn = None     # the FnNode being built, or None for main
+
+        self.fns = {}              # FnNode -> its ir.Function, every one before any body
 
         self.printf = ir.Function(
             self.module,
@@ -97,6 +110,13 @@ class CodeGen:
         program.accept(self)
         return self.module
 
+    def begin_function(self, function, fn_node):
+        """Point the builder at a fresh function: its own entry block, its own slots."""
+        self.function, self.current_fn = function, fn_node
+        self.entry = function.append_basic_block("entry")
+        self.builder = ir.IRBuilder(self.entry)
+        self.last_slot = None
+
     def alloca_in_entry(self, decl):
         """A slot for `decl` at the top of the entry block, then back to where we were."""
         here = self.builder.block
@@ -123,9 +143,27 @@ class CodeGen:
     def visit_program(self, node):
         for struct in node.structs:
             struct.accept(self)
+        for fn in node.fns:                                      # every signature first...
+            fn_type = ir.FunctionType(self.types[fn.result_type],
+                                      [self.types[param.type_name] for param in fn.params])
+            self.fns[fn] = ir.Function(self.module, fn_type, name=FN_PREFIX + fn.name)
+        for fn in node.fns:                                      # ...then the bodies
+            fn.accept(self)
+
+        main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
+        self.begin_function(main, None)
         for stmt in node.statements:
             stmt.accept(self)
         node.exit.accept(self)
+
+    def visit_fn(self, node):
+        function = self.fns[node]
+        self.begin_function(function, node)
+        for param, arg in zip(node.params, function.args):      # a parameter is a copy in a slot
+            arg.name = param.name
+            self.slots[param] = self.alloca_in_entry(param)
+            self.builder.store(arg, self.slots[param])
+        node.body.accept(self)                                   # its last line is an exit: a ret
 
     def visit_struct(self, node):
         struct_type = self.context.get_identified_type(node.name)
@@ -198,9 +236,13 @@ class CodeGen:
             node.exit.accept(self)
 
     def visit_exit(self, node):
-        # printf and ret wherever the exit stands -- in entry, in an arm or in a merge. The
-        # ret terminates the current block, so an if around it adds no br.
+        # A ret wherever the exit stands -- in entry, in an arm or in a merge. The ret
+        # terminates the current block, so an if around it adds no br.
         value = node.value.accept(self)
+        if self.current_fn is not None:                          # in a function: its result
+            self.builder.ret(self.coerce(value, node.value.type, self.current_fn.result_type))
+            return
+        # at the top level: print, and end the program
         if node.value.type == "bool":
             word = self.builder.select(value,
                                        self.builder.bitcast(self.word_true, I8_PTR),
@@ -240,6 +282,11 @@ class CodeGen:
     def visit_field(self, node):
         ptr = self.gep(self.slots[node.decl], node.indices, name=chain(node.name, node.links))
         return self.builder.load(ptr)
+
+    def visit_call(self, node):
+        args = [self.coerce(arg.accept(self), arg.type, param.type_name)    # an i32 into an i64 parameter
+                for param, arg in zip(node.fn.params, node.args)]
+        return self.builder.call(self.fns[node.fn], args, name=node.name)
 
     def visit_bool(self, node):
         return ir.Constant(I1, 1 if node.value else 0)
