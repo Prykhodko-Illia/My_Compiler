@@ -1,106 +1,157 @@
-AI usage log - Practice 5 (if/else, scopes and basic blocks)
-============================================================
+AI usage log - Practice 6 (structs and functions)
+=================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
-Model:   Claude Opus 5.5 (claude-opus-5-5), one session for the whole practice
-Date:    2026-10-07
-Setup:   The AI edited files in ~/Study/compilers and ran the compiler, the tests, lli, opt, llc and
-         clang on my Multipass VM (noble-compilers) with `multipass exec`, where the repository is
-         mounted at ~/compilers. I created the practice-5 branch myself. This time I asked the AI to
-         make the commits (one per task, under my git user, with no AI co-author line); pushing the
-         branch and opening the pull request are mine.
+Model:   Claude Opus 5.5 (claude-opus-5-5), the same session as Practice 5, continued (prompts 1-9);
+         Claude Opus 5.5 (claude-opus-5-5) in a separate review session (prompts 10-11)
+Date:    2026-10-12
+Setup:   The AI edited files in ~/Study/compilers and ran the compiler, the tests, lli, llc and clang
+         on my Multipass VM (noble-compilers) with `multipass exec`, where the repository is mounted
+         at ~/compilers. I created the practice-6 branch and fast-forwarded it myself. As in Practice
+         5, I asked the AI to make the commits (one per task, under my git user, with no AI co-author
+         line); pushing the branch and opening the pull request are mine.
 
-Below is every prompt I sent about Practice 5, quoted as written, followed by what the AI did.
+Below is every prompt I sent about Practice 6, quoted as written, followed by what the AI did.
 
 
 1. Prompt:
-   [attached w05-practice.pdf]
-   "Hi, look at this task and tell me what I should do and what is the plan here"
+   [attached w06-practice.pdf]
+   "Hello, look at this file with practice and tell what should be done here.
+
+   Also please point on the biggest differeneces that will appear in our language"
 
    What the AI did:
-   Read the PDF (extracting its text with macOS PDFKit, since no PDF tools were installed) and my
-   Practice 4 code, and wrote no code. Explained each task against my files: if / else / while
-   keywords and a lone '!' in the lexer, the lexer giving up brace pairing, a line cursor in the
-   parser, If / Block / Not nodes, a stack of scope frames in the semantic pass, then / else / merge
-   blocks with cbranch and entry-block allocas in the generator. Worked the warm-up on paper (the
-   inner exit prints 20; the other two exits are never reached; 2 frames pushed and popped; 5 basic
-   blocks counting entry, where the PDF says four). Listed the existing tests whose meaning would
-   change (single_bang, unclosed_brace, redeclared), and two mismatches between the PDF and my repo:
-   compiler.py is in the root, not in src/, and my test runner is run_tests.sh, not check.py.
+   Read the PDF and wrote no code. Found that my practice-6 branch had been created from a stale
+   local main (the Practice 4 merge) and was missing all of Practice 5, which was only on
+   origin/main, and gave me the fast-forward command. Summarised the four tasks and explained the
+   biggest changes to the language: types are no longer three fixed words but user-defined structs,
+   so the semantic pass needs a struct table and gives field indices to the generator; mut becomes
+   deep (every link of a chain); a program becomes several functions, so exit has two meanings, a
+   body needs its own scope stack that cannot see top-level variables, signatures must be collected
+   before bodies, and the generator must become per-function; objects are copied as values; and the
+   parser needs two tokens of look-ahead for "Point p{...}" against "p := ...". Listed open
+   decisions (shared names, widening into fields, == on structs).
 
 
 2. Prompt:
-   "yes, let's start with task 1
-   do it, commit (do not include yourself here) and describe me it in short after you will do that"
+   "I fast-forwarded, what does the "gep" mean?"
 
-   What the AI did (Task 1 - the front end):
-   Lexer: if and else became keywords; the BANG state now makes '!=' on '=' and a lone '!' on
-   anything else, which is then read again; the open-brace tracking was removed, so '{' and '}' are
-   plain tokens. Parser: rewritten around two cursors -- peek_line / next_line over lines and
-   peek / eat over tokens -- with one loop, parse_lines, reading both the program and every block, so
-   blocks nest; new parse_if, parse_block and "!" factor. New tree nodes IfNode, BlockNode and
-   NotNode; grammar.ebnf updated. The semantic pass got a temporary "not supported yet" error for if
-   and '!' (marked TODO, removed in Task 2). Checked that --ast of the warm-up program matches the
-   PDF line for line, and that all six parser errors in the PDF come out with the same message and
-   line:column. Added seven parser error tests, updated the unclosed_brace and not_a_statement
-   expectations, and removed err/single_bang because bool c{!b} is a valid program now. 54 tests
-   passing. Committed as "Task 1: ...". Also saved two notes in its own memory for later sessions:
-   commits in this repo carry no AI attribution, and the tests run in the VM.
+   What the AI did:
+   Explained getelementptr: it only computes the address of a field, and load / store then use it;
+   the first index 0 steps through the pointer, then one index per field. Generated a small llvmlite
+   example in the VM (Point inside Circle) to show real IR, and explained why the PDF wants the
+   semantic pass to find the indices so the generator never looks a field up by name.
 
 
 3. Prompt:
-   "committed, let's do task 2"
+   "let's do task 1"
 
-   What the AI did (Task 2 - scopes):
-   Replaced the flat symbol table with a stack of frames: the program has the bottom frame,
-   visit_block pushes and pops one, a declaration is checked for a duplicate in the top frame only
-   (so shadowing with any type is allowed), and lookup walks the frames from the top down. Added the
-   two bool rules (the if condition, the operand of '!'). The redeclaration message became the PDF's
-   "already declared in this block" everywhere, which changed tests/err/redeclared. The code
-   generator got a temporary "not supported yet" stop for if and '!' until Task 3. Added the PDF's
-   five error programs (all at the PDF's line:column) and one more of its own (a variable declared in
-   the then block used in the else block), and checked with a short script that the three x of the
-   warm-up program resolve to three different declarations. 60 tests passing. Committed as
-   "Task 2: ...".
+   What the AI did (Task 1 - structs):
+   Brought field access forward from Task 3, because a struct cannot be tested without reading a
+   field (exit needs a built-in value), and said so. Lexer: struct, '.' and ','. Parser:
+   parse_struct (name line, '{', one field per line, '}'), structs first in the program, value
+   lists in {}, field chains for reading and writing, and the two-token look-ahead for a line
+   starting with a name. Tree: StructNode, FieldDeclNode, FieldNode, Link. Semantic pass: a struct
+   table filled in program order (so a struct cannot contain itself), one value per field or one
+   whole object to copy, chains turned into field indices stored on the node, every link mut for a
+   write, every field mut at every depth for := on a whole object, no == / arithmetic / exit on
+   objects. Generator: named struct types in a context of its own, one alloca per object, one gep
+   per chain, whole objects as one load and store. Made unknown types report at the type, not the
+   name. Added 6 ok and 16 err programs. 102 tests passing. Committed as "Task 1: ...".
 
 
 4. Prompt:
-   "committed, let's do task 3"
+   "what are the indices when one struct is inside another"
 
-   What the AI did (Task 3 - basic blocks):
-   visit_if appends then / else / merge blocks and ends the current block with a cbranch on block
-   objects; each arm gets a br to merge only if the block the builder ended up in is not terminated
-   (an exit in an arm already has its ret; a nested if moved the builder to its own merge).
-   alloca_in_entry() puts every alloca at the top of the entry block in declaration order and goes
-   back; the store stays in place. '!' is builder.not_. Added eleven programs to tests/ok, each with
-   .expected and .ast: the PDF's 15 and the warm-up's 20, if without else, shadowing with another
-   type, an exit in one arm and in both, '!' in a condition and its precedence, the variable assigned
-   in both arms, and an if inside an else. Checked every output with LLVM's verifier and through
-   lli, two programs through llc + clang, and that opt -passes=mem2reg prints the PDF's
-   "%r.0 = phi i32 [ 1, %then ], [ 2, %else ]". Updated README.md for if / else, '!', scopes, basic
-   blocks and opt. 71 tests passing. Committed as "Task 3: ...".
+   What the AI did:
+   Explained with Ring / Circle / Point that there is one index per level, each counted inside the
+   struct reached at that step, after the leading 0 (g.inner.center.y is 0, 1, 0, 1), and showed
+   the gep lines from my compiler. Its first example was rejected by my compiler because a field it
+   wrote through was const; it made the fields mut and pointed out that the rejection was correct.
 
 
 5. Prompt:
-   "committed, let's do the while task"
+   "great, let's do task 2"
 
-   What the AI did (additional task - while):
-   while became a keyword, a parse_while method and a WhileNode; the semantic pass checks its
-   condition with the same helper as if, and the body is an ordinary block with its own frame. The
-   generator emits cond / body / end blocks, with a br from the body back to cond (the back edge)
-   unless an exit in the body already ended it. Added five ok programs (the PDF's 55, a loop that
-   never runs, an exit inside the body, nested loops, shadowing inside the body) and four error
-   programs (a non-bool condition, '{' on the while line, a body variable used after the loop, an
-   empty body). Showed the IR with the back edge, the two phis mem2reg makes in cond, and 55 as a
-   native binary. Updated README.md. 80 tests passing. Committed as "Additional task: while".
+   What the AI did (Task 2 - functions):
+   Lexer: fn, '(' and ')', and '->' through a MINUS state like BANG. Parser: parse_fn, functions
+   after the structs and before the statements (so anything out of order is reported at its line),
+   calls as factors, a call alone on a line rejected, a body that does not end with exit rejected.
+   Tree: FnNode, ParamNode, CallNode. Semantic pass: every signature collected before any body
+   (recursion and calls to functions below), a fresh scope stack per body with the parameters in
+   its bottom frame, a clear error when a body uses a top-level variable, parameters never mut,
+   argument count and types checked, exit checked against the result type. Generator: per-function
+   builder, entry block and slots; every fn declared as fn_<name> before any body is built; the
+   parameters stored into slots; exit as ret, a call as call; structs passed and returned by value.
+   Checked the PDF's check (true), fib (55) and the Task 3 program (28). Added 9 ok and 19 err
+   programs. 130 tests passing. Committed as "Task 2: ...".
 
 
 6. Prompt:
-   "committed, now update ai_usage.txt for practice 5"
+   "let's do task 3"
+
+   What the AI did (Task 3 - program structure, field access and calls):
+   Mapped every test the PDF lists to an existing test, added nested calls and calls in if / while
+   conditions to tests/ok, and an i64 function initialising an i32 variable and a write to a
+   parameter's field to tests/err. Rewrote the README for structs, functions, the program order,
+   the new errors and how each phase handles them, and compiled its example to check the result.
+   134 tests passing. Committed as "Task 3: ...".
+
+
+7. Prompt:
+   "wait, in short, what was done on the practice 6"
 
    What the AI did:
-   Replaced the Practice 4 log in this file with this one. The Practice 4 log is still in git
-   history (commit d73cb5e, merged into main).
+   Gave a short summary of the three commits and what was still left.
+
+
+8. Prompt:
+   "let's do the additional task"
+
+   What the AI did (additional task - nested initialisation):
+   Parser: a value in {} may be another {} (a new InitNode). Semantic pass: one recursive
+   check_values for the outer {} and every inner one, with the same rules; a {} for a built-in
+   field or variable, and a {} with the wrong number of values, are errors at that '{'. Generator:
+   an inner {} is built in registers from undef with insertvalue per field, then stored into its
+   field through the outer gep. Checked the PDF's program (36) through lli and as a native binary.
+   Added 4 ok and 7 err programs. 145 tests passing. Committed as "Additional task: ...".
+
+
+9. Prompt:
+   "now update ai_usage.txt for practice 6"
+
+   What the AI did:
+   Replaced the Practice 5 log in this file with this one. The Practice 5 log is still in git
+   history (commit d79d0b1, merged into main).
+
+
+10. Prompt (review session):
+   [attached w06-practice.pdf]
+   "hello, look at these tasks requirements for the practice 6 and verify if they all are met
+   correctly"
+
+   What the AI did:
+   Read the PDF and the four practice-6 commits (lexer, parser, grammar, semantic pass, generator,
+   tests) without changing any code. Ran the test runner in the VM (145 passing, the programs of
+   Practices 2-5 included), the PDF's four programs through lli (true, 55, 28, 36; 28 also through
+   llc and clang), and about 60 extra programs covering every rule of the PDF: the three mut-chain
+   examples, copies, struct order and self-containment, parameters, top-level visibility, argument
+   count and types, i32 into an i64 parameter, exit types in a function and at the top level, the
+   program order, a call alone, no grouping parentheses, and the {} errors of the additional task
+   at the right '{'. Checked that the twelve tests the PDF lists exist in tests/ok and tests/err.
+   Reported every task as met. Flagged that ai_usage.txt still held the Practice 5 log at that
+   point and that practice-6 was not pushed and had no pull request; and, as cosmetic only, a stale
+   header comment in src/codegen.py ("the two fields"), and that a field typed with a struct
+   declared below is reported as "unknown type" rather than "declared below". Named the tests and
+   IR lines to show at the defence.
+
+
+11. Prompt (review session):
+   "add your session to ai_usage.txt"
+
+   What the AI did:
+   Added prompts 10 and 11 to this file and noted the review session on the Model line. Touched no
+   other file.
 
 
 What I took as-is, and what I changed
@@ -109,11 +160,19 @@ Taken as-is: the changes to src/lexer.py, src/parser.py, src/ast_nodes.py, src/s
 src/codegen.py, grammar.ebnf, README.md, and the new tests under tests/ok and tests/err, as produced
 in the four steps above, one commit per step.
 
-Changed by me: the branch (I created practice-5 myself) and the push and pull request. I made no hand
-edits to the generated code; if I change something later, it goes here.
+Decisions the AI made where the PDF leaves a choice, which I kept: an i32 value may widen into an
+i64 field and into an i64 result, as everywhere else; a function and a variable may share a name,
+since a call always has '('; parameters share a frame with the body's own variables, so declaring
+one again is an error rather than shadowing; == on two objects is an error; function names in the
+IR get the prefix fn_.
 
-Checked by the AI and shown to me: the test runner after every step (54, 60, 71, 80 passing), --ast of
-the warm-up program, 15, 20 and 55 through lli, the PDF's error programs with their line:column, the
-blocks of the nested program in output.ll, and the phi from opt.
+Changed by me: the branch (I created practice-6 and fast-forwarded it to origin/main) and the push
+and pull request. I made no hand edits to the generated code; if I change something later, it goes
+here.
 
-Checked by me: TODO -- write here what I ran and looked at myself before the defence.
+Checked by the AI and shown to me: the test runner after every step (102, 130, 134, 145 passing,
+all earlier programs included), true, 55, 28 and 36 through lli, %"Point", gep, a function
+definition, a call and insertvalue in output.ll, and the rejected programs with their line:column.
+The review session (prompt 10) re-ran all of it independently and checked every rule of the PDF.
+
+Checked by me: I checked that tests runs correctly and also verified each intermediate result and explanation of Claude with the task requirements
