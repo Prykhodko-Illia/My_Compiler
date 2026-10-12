@@ -1,0 +1,10 @@
+i32 a{3}
+if a == 3
+{
+    exit true
+}
+else
+{
+    exit false
+}
+exit 0

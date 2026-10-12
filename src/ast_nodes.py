@@ -3,22 +3,28 @@
 The grammar dictates the classes: where a rule says "either / or" there is an abstract
 base with one subclass per alternative, and where it says "this, then that" there is a
 class whose fields are the parts that carry information. Quoted words disappear or
-become flags -- "mut" is a boolean, the braces and ":=" leave nothing behind.
+become flags -- "mut" is a boolean, "else" is whether else_block is set, the braces of
+an initialiser and ":=" leave nothing behind (the braces of a block become a BlockNode).
 
     Node
     +-- ProgramNode      statements: [StmtNode], exit: ExitNode
     +-- StmtNode   (abstract)
     |   +-- DeclNode     name, type_name, mutable, init: ExprNode
     |   +-- AssignNode   name, value: ExprNode
+    |   +-- IfNode       condition: ExprNode, then_block: BlockNode, else_block: BlockNode | None
+    |   +-- WhileNode    condition: ExprNode, body: BlockNode
+    +-- BlockNode        statements: [StmtNode], exit: ExitNode | None
     +-- ExitNode         value: ExprNode
     +-- ExprNode   (abstract)      -- also carries `type`, filled in by the semantic pass
         +-- BinOpNode    op ('+', '-', '*', '==', '!='), left, right: ExprNode
+        +-- NotNode      operand: ExprNode
         +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
         +-- BoolNode     value (True / False)
         +-- ConstNode    value
 
 Every node keeps the line and column of the token it came from -- the name for a
-declaration or an assignment, the operator for an operation -- so the walks that come
+declaration or an assignment, the operator for an operation, the 'if' for an if, the
+'while' for a while, the '{' for a block -- so the walks that come
 after the parser can say where 'x' is not mut without having any tokens left. The tree
 holds names, numbers, flags and child nodes: never a token.
 
@@ -119,6 +125,58 @@ class AssignNode(StmtNode):
         return visitor.visit_assign(self)
 
 
+class IfNode(StmtNode):
+    def __init__(self, line, col, condition, then_block, else_block):
+        super().__init__(line, col)       # position of the 'if' keyword
+        self.condition = condition        # ExprNode
+        self.then_block = then_block      # BlockNode
+        self.else_block = else_block      # BlockNode, or None when there is no else
+
+    def label(self):
+        return "If"
+
+    def children(self):
+        return [self.condition, self.then_block] + ([self.else_block] if self.else_block else [])
+
+    def accept(self, visitor):
+        return visitor.visit_if(self)
+
+
+class WhileNode(StmtNode):
+    def __init__(self, line, col, condition, body):
+        super().__init__(line, col)       # position of the 'while' keyword
+        self.condition = condition        # ExprNode
+        self.body = body                  # BlockNode
+
+    def label(self):
+        return "While"
+
+    def children(self):
+        return [self.condition, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_while(self)
+
+
+class BlockNode(Node):
+    """The lines between '{' and '}'. Not a statement of its own: it only follows an if,
+    an else or a while. It may end with an exit, like the program does."""
+
+    def __init__(self, line, col, statements, exit):
+        super().__init__(line, col)       # position of the '{'
+        self.statements = statements      # [StmtNode], at least one line in all
+        self.exit = exit                  # ExitNode, or None
+
+    def label(self):
+        return "Block"
+
+    def children(self):
+        return self.statements + ([self.exit] if self.exit else [])
+
+    def accept(self, visitor):
+        return visitor.visit_block(self)
+
+
 class ExitNode(Node):
     def __init__(self, line, col, value):
         super().__init__(line, col)       # position of the 'exit' keyword
@@ -149,6 +207,21 @@ class BinOpNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_binop(self)
+
+
+class NotNode(ExprNode):
+    def __init__(self, line, col, operand):
+        super().__init__(line, col)       # position of the '!'
+        self.operand = operand            # ExprNode
+
+    def label(self):
+        return "Not"
+
+    def children(self):
+        return [self.operand]
+
+    def accept(self, visitor):
+        return visitor.visit_not(self)
 
 
 class VarNode(ExprNode):

@@ -10,32 +10,46 @@
  * Terminals come straight from the lexer (src/lexer.py):
  *   "i32" "i64" "bool"    keyword tokens: the type names
  *   "mut" "exit"          keyword tokens
+ *   "if" "else" "while"   keyword tokens
  *   "true" "false"        keyword tokens: the boolean literals
  *   "{" "}"               block tokens
  *   ":=" "+" "-" "*"      operator tokens
  *   "==" "!="             operator tokens, two bytes each
+ *   "!"                   operator token: a '!' not followed by '='
  *   ident                 identifier token: letters, digits and _, not starting with a
  *                         digit, and not a keyword -- how it is spelled is the lexer's rule
  *   number                constant token: decimal digits, no sign
  *
- * One statement per line. The lexer ends every line with an endline token, which is what
- * tells the parser a statement is over; blank lines carry no statement and are skipped.
+ *   NL                    the endline token that ends every line
+ *
+ * One line per declaration, assignment and exit. An if takes several: the condition
+ * line, then "{", every line of the block and "}" each on a line of their own, and the
+ * same again after an "else". A while takes the same shape, without the else. NL is written out wherever a line must end; blank lines
+ * carry nothing and are skipped. The lexer does not pair the braces -- this grammar does.
  *
  * What this grammar deliberately cannot say (those are semantics, checked by the pass in
  * src/semantic.py): that a variable was declared before it is used, that it was declared
- * only once, that it is "mut" before it is assigned, and every type rule -- that "+" takes
- * two integers, that a comparison gives a bool, that an i32 may widen into an i64.
+ * only once in its block, which declaration a name means when a block shadows it, that it
+ * is "mut" before it is assigned, and every type rule -- that "+" takes two integers, that
+ * a comparison gives a bool, that an i32 may widen into an i64, that the condition of an
+ * if or a while and the operand of "!" are bools.
  *)
 
 program   ::= { statement } exit
 
-statement ::= decl | assign
+statement ::= decl | assign | if | while
 
 decl      ::= type [ "mut" ] ident "{" expr "}"
 
 type      ::= "i32" | "i64" | "bool"
 
 assign    ::= ident ":=" expr
+
+if        ::= "if" expr NL block [ "else" NL block ]
+
+while     ::= "while" expr NL block
+
+block     ::= "{" NL { statement } [ exit NL ] "}" NL
 
 exit      ::= "exit" factor
 
@@ -45,7 +59,7 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident
+factor    ::= number | "true" | "false" | ident | "!" factor
 
 (* Precedence and associativity come out of the shape of the last four rules, with no
  * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
@@ -57,6 +71,13 @@ factor    ::= number | "true" | "false" | ident
  * expr has no loop around the comparison, so at most one comparison per expression.
  * There are no parentheses in the language yet.
  *
+ * "!" lives in factor, so it binds tighter than any operator and applies to the factor
+ * right after it: !a == b compares !a with b. "!" factor recurses, so !!a is allowed.
+ *
  * Note that exit takes a factor, not an expr: a single constant, boolean literal or
- * variable, never an operation.
+ * variable -- or one of those under "!" -- never an operation.
+ *
+ * A block may not be empty: it holds at least one statement or an exit, which the rule
+ * cannot say on its own, so the parser checks it. An exit ends its block, as it ends the
+ * program: only the "}" may follow it. An if is a statement, so blocks nest.
  *)

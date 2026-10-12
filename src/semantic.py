@@ -2,14 +2,22 @@
 
 A pass of its own, run on the whole tree before the code generator is even constructed:
 it rejects the program before a single instruction exists, and it can be tested without
-LLVM at all. It owns the symbol table (name -> DeclNode, which knows the type and the
-mut flag), and it answers the one question the parser cannot: what is the type of this
-expression?
+LLVM at all. It owns the symbol table, and it answers the one question the parser
+cannot: what is the type of this expression?
+
+The symbol table is a stack of frames, one per scope, each a dict name -> DeclNode (which
+knows the type and the mut flag). The program has the bottom frame; a block pushes an
+empty frame on entry and pops it on exit. A declaration goes into the top frame, and only
+the top frame is checked for a duplicate -- so a block may declare a name again with any
+type: shadowing. A use walks the frames from the top down and takes the first hit; a name
+in no frame, including one whose frame has already been popped, is used before its
+declaration.
 
 Its contract with the code generator is two fields on the tree:
   * `node.type` on every expression node -- "i32", "i64" or "bool";
   * `node.decl` on every VarNode and AssignNode -- the declaration the name resolved to.
-The generator reads those and looks nothing up.
+The generator reads those and looks nothing up. With shadowing that matters: three x in
+three scopes are three declarations, and the pass is the one that knows which is meant.
 
 The type rules:
   * a decimal constant has the narrowest type it fits: i32, else i64, else an error;
@@ -17,6 +25,8 @@ The type rules:
   * == != take two integers (any mix) or two bools, and give a bool;
   * an i32 value may initialise or be assigned to an i64 variable -- and that is the only
     conversion in the language: never the other way round, never across bool;
+  * ! takes a bool and gives a bool;
+  * the condition of an if or a while is a bool;
   * exit takes an integer or a bool.
 """
 
@@ -34,16 +44,18 @@ def wider(left, right):
 
 class SemanticChecker:
     def __init__(self):
-        self.symbols = {}                 # name -> DeclNode
+        self.scopes = [{}]                # frames, innermost last: name -> DeclNode
 
     def run(self, program):
         program.accept(self)
         return program
 
     def lookup(self, node, name):
-        if name not in self.symbols:
-            raise error_at(node, f"variable '{name}' is used before its declaration")
-        return self.symbols[name]
+        """The declaration `name` means here: the innermost frame that has it wins."""
+        for frame in reversed(self.scopes):
+            if name in frame:
+                return frame[name]
+        raise error_at(node, f"variable '{name}' is used before its declaration")
 
     def check_assignable(self, expr, want, at, what):
         """Is a value of type expr.type allowed where a `want` is expected?"""
@@ -62,12 +74,13 @@ class SemanticChecker:
         node.exit.accept(self)
 
     def visit_decl(self, node):
-        if node.name in self.symbols:
-            prev = self.symbols[node.name]
-            raise error_at(node, f"variable '{node.name}' is already declared at line {prev.line}:{prev.col}")
-        node.init.accept(self)            # typed before the name exists: `i32 t{t}` is an error
+        if node.name in self.scopes[-1]:  # only this frame: an outer x may be shadowed
+            raise error_at(node, f"variable '{node.name}' is already declared in this block")
+        # Typed before the name exists: `i32 t{t}` is an error, and in a block that shadows
+        # an outer t, `i64 t{t + 1}` reads the outer one.
+        node.init.accept(self)
         self.check_assignable(node.init, node.type_name, node, f"initialise '{node.name}'")
-        self.symbols[node.name] = node
+        self.scopes[-1][node.name] = node
 
     def visit_assign(self, node):
         decl = self.lookup(node, node.name)
@@ -76,6 +89,31 @@ class SemanticChecker:
         node.value.accept(self)
         self.check_assignable(node.value, decl.type_name, node, f"assign to '{node.name}'")
         node.decl = decl
+
+    def check_condition(self, node, keyword):
+        condition = node.condition.accept(self)
+        if condition != "bool":
+            raise error_at(node, f"the condition of '{keyword}' must be bool, got {condition}")
+
+    def visit_if(self, node):
+        self.check_condition(node, "if")
+        node.then_block.accept(self)
+        if node.else_block:
+            node.else_block.accept(self)
+
+    def visit_while(self, node):
+        # The condition is outside the body's frame: it is evaluated before the body
+        # starts and after it ends, so it can only see what the while itself can see.
+        self.check_condition(node, "while")
+        node.body.accept(self)
+
+    def visit_block(self, node):
+        self.scopes.append({})
+        for stmt in node.statements:
+            stmt.accept(self)
+        if node.exit:
+            node.exit.accept(self)
+        self.scopes.pop()                 # its names are gone: a use after the block is an error
 
     def visit_exit(self, node):
         # Every type the language has is printable -- an integer or a bool -- so there is
@@ -95,6 +133,13 @@ class SemanticChecker:
             if (left in INTEGERS) != (right in INTEGERS):
                 raise error_at(node, f"cannot compare {left} with {right}")
             node.type = "bool"
+        return node.type
+
+    def visit_not(self, node):
+        operand = node.operand.accept(self)
+        if operand != "bool":
+            raise error_at(node, f"cannot apply '!' to {operand}")
+        node.type = "bool"
         return node.type
 
     def visit_var(self, node):

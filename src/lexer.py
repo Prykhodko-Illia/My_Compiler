@@ -6,12 +6,16 @@ the byte's class says what happens next. A byte that ends a token is read again
 in START (`continue` without advancing) -- the only byte ever re-examined.
 
 The two-byte operators ('==', '!=', ':=') each get a state that accepts exactly
-one more byte, so the scanner never looks ahead.
+one more byte, so the scanner never looks ahead. '!' is the one state with two
+ways out: '=' makes '!=', anything else makes a lone '!' and is read again.
+
+'{' and '}' are plain tokens: a block spans lines now, so pairing them is the
+parser's job, not the lexer's.
 """
 
 from dataclasses import dataclass
 
-from .errors import CompileError, error_at
+from .errors import CompileError
 
 
 @dataclass
@@ -20,8 +24,8 @@ class Token:
     text: str
     line: int
     col: int         # 1-based position of the token's first byte
-    sub: str = ""    # typename | specifier | statement | boolean | numeric
-                     # start | end | assign | plus | minus | times | eq | ne
+    sub: str = ""    # typename | specifier | statement | branch | loop | boolean | numeric
+                     # start | end | assign | plus | minus | times | eq | ne | not
 
     def __str__(self):
         text = "\\n" if self.kind == "endline" else self.text
@@ -35,6 +39,9 @@ KEYWORDS = {
     b"bool": "typename",
     b"mut": "specifier",
     b"exit": "statement",
+    b"if": "branch",
+    b"else": "branch",
+    b"while": "loop",
     b"true": "boolean",
     b"false": "boolean",
 }
@@ -49,7 +56,6 @@ SINGLE_BYTE = {                  # tokens that are complete after one byte
 
 SPACE, TAB, NEWLINE = 32, 9, 10
 COLON, EQUALS, BANG = ord(":"), ord("="), ord("!")
-LBRACE, RBRACE = ord("{"), ord("}")
 
 
 def is_alpha(b):
@@ -68,7 +74,6 @@ def lex(data: bytes):
     """Return a list of lines, each a list of tokens ending with an endline token
     (the last line may lack it if the file has no trailing newline)."""
     lines, tokens = [], []
-    open_braces = []                         # '{' tokens not yet closed on this line
     state, start, start_col = "START", 0, 1
     line, col = 1, 1
     i = 0
@@ -77,8 +82,6 @@ def lex(data: bytes):
 
         if state == "START":
             if b is None or b == NEWLINE:
-                if open_braces:
-                    raise error_at(open_braces[-1], "'{' is not closed before the end of the line")
                 if b is None:
                     break
                 tokens.append(Token("endline", "\n", line, col))
@@ -99,12 +102,7 @@ def lex(data: bytes):
                 state, start_col = "BANG", col
             elif b in SINGLE_BYTE:
                 kind, sub = SINGLE_BYTE[b]
-                token = Token(kind, chr(b), line, col, sub)
-                tokens.append(token)
-                if b == LBRACE:
-                    open_braces.append(token)
-                elif b == RBRACE and open_braces:
-                    open_braces.pop()        # a '}' with no '{' is the parser's problem
+                tokens.append(Token(kind, chr(b), line, col, sub))
             else:
                 raise CompileError(line, col, f"unexpected byte {show_byte(b)}")
 
@@ -148,8 +146,10 @@ def lex(data: bytes):
             if b == EQUALS:
                 tokens.append(Token("operator", "!=", line, start_col, "ne"))
                 state = "START"
-            else:
-                raise CompileError(line, start_col, "expected '!=' (a single '!' is not an operator)")
+            else:                            # a lone '!': the negation
+                tokens.append(Token("operator", "!", line, start_col, "not"))
+                state = "START"
+                continue                     # re-read this byte in START
 
         i += 1
         col += 1

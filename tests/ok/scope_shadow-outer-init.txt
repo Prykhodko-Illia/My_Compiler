@@ -1,0 +1,7 @@
+i32 t{5}
+if true
+{
+    i64 t{t + 1}
+    exit t
+}
+exit t

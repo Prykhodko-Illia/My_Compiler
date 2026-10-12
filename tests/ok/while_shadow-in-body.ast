@@ -1,0 +1,25 @@
+Program
+  Decl i i32 mut
+    Const 0
+  Decl even bool mut
+    Bool true
+  While
+    BinOp !=
+      Var i
+      Const 5
+    Block
+      Decl even bool const
+        Not
+          Var even
+      Assign i
+        BinOp +
+          Var i
+          Const 1
+  While
+    Not
+      Var even
+    Block
+      Assign even
+        Bool true
+  Exit
+    Var even

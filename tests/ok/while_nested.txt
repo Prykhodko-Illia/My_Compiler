@@ -1,0 +1,13 @@
+i32 mut i{0}
+i64 mut total{0}
+while i != 3
+{
+    i32 mut j{0}
+    while j != 4
+    {
+        total := total + i * j
+        j := j + 1
+    }
+    i := i + 1
+}
+exit total
