@@ -8,9 +8,10 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
 
     Node
     +-- ProgramNode      structs: [StructNode], fns: [FnNode], statements: [StmtNode], exit: ExitNode
-    +-- StructNode       name, fields: [FieldDeclNode]
-    +-- FieldDeclNode    name, type_name, mutable  -- also carries `index`, from the semantic pass
+    +-- StructNode       name, fields: [MemberNode], methods: [MemberFnNode]
+    +-- MemberNode       name, type_name, mutable  -- a field; also carries `index`, from the semantic pass
     +-- FnNode           name, params: [ParamNode], result_type, body: BlockNode
+    |   +-- MemberFnNode   the same, declared inside a struct after its fields
     +-- ParamNode        name, type_name   -- a declaration: never mut, so never assigned
     +-- StmtNode   (abstract)
     |   +-- DeclNode     name, type_name, mutable, values: [ExprNode]
@@ -25,6 +26,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
         +-- FieldNode    name, links: [Link]   -- c.center.x: the variable, then each field
         +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
+        +-- MemberCallNode  target: VarNode | FieldNode, name, args: [ExprNode] -- c.center.d2()
         +-- InitNode     values: [ExprNode]     -- an inner {} for a struct field: {10, 20}
         +-- BoolNode     value (True / False)
         +-- ConstNode    value
@@ -125,22 +127,23 @@ class ProgramNode(Node):
 
 
 class StructNode(Node):
-    def __init__(self, line, col, name, fields):
+    def __init__(self, line, col, name, fields, methods):
         super().__init__(line, col)       # position of the name
         self.name = name
-        self.fields = fields              # [FieldDeclNode], at least one, in declaration order
+        self.fields = fields              # [MemberNode], at least one, in declaration order
+        self.methods = methods            # [MemberFnNode], maybe none, after the fields
 
     def label(self):
         return f"Struct {self.name}"
 
     def children(self):
-        return self.fields
+        return [*self.fields, *self.methods]
 
     def accept(self, visitor):
         return visitor.visit_struct(self)
 
 
-class FieldDeclNode(Node):
+class MemberNode(Node):
     def __init__(self, line, col, name, type_name, mutable, type_at):
         super().__init__(line, col)       # position of the name
         self.name = name
@@ -150,7 +153,7 @@ class FieldDeclNode(Node):
         self.index = None                 # its place in the struct, set by the semantic pass
 
     def label(self):
-        return f"FieldDecl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
+        return f"Member {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
 
 class FnNode(Node):
@@ -170,6 +173,17 @@ class FnNode(Node):
 
     def accept(self, visitor):
         return visitor.visit_fn(self)
+
+
+class MemberFnNode(FnNode):
+    """A function declared inside a struct. It is called on an object of that struct and
+    sees the object's fields by name; the object itself has no name in the language."""
+
+    def label(self):
+        return f"MemberFn {self.name} -> {self.result_type}"
+
+    def accept(self, visitor):
+        return visitor.visit_member_fn(self)
 
 
 class ParamNode(Node):
@@ -374,6 +388,27 @@ class CallNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_call(self)
+
+
+class MemberCallNode(ExprNode):
+    """A call of a member function on an object: p.d2(), c.center.d2(). The object is
+    the chain before the last '.', the name after it is the function; the call ends the
+    chain."""
+
+    def __init__(self, line, col, target, name, args):
+        super().__init__(line, col)       # position of the member function's name
+        self.target = target              # VarNode | FieldNode: the object it is called on
+        self.name = name
+        self.args = args                  # [ExprNode]
+
+    def label(self):
+        return f"MemberCall {self.name}"
+
+    def children(self):
+        return [self.target, *self.args]
+
+    def accept(self, visitor):
+        return visitor.visit_member_call(self)
 
 
 class InitNode(ExprNode):

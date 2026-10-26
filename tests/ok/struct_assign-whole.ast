@@ -1,10 +1,10 @@
 Program
   Struct Point
-    FieldDecl x i32 mut
-    FieldDecl y i32 mut
+    Member x i32 mut
+    Member y i32 mut
   Struct Circle
-    FieldDecl center Point const
-    FieldDecl radius i32 mut
+    Member center Point const
+    Member radius i32 mut
   Decl r Point mut
     Const 1
     Const 2

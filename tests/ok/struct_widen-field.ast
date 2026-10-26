@@ -1,7 +1,7 @@
 Program
   Struct W
-    FieldDecl big i64 mut
-    FieldDecl flag bool const
+    Member big i64 mut
+    Member flag bool const
   Decl w W const
     Const 7
     Bool true

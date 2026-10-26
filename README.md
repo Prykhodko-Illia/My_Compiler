@@ -370,7 +370,7 @@ grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
   lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, COLON, EQ, BANG, MINUS)
   parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
-  ast_nodes.py      the tree: Node, ProgramNode, StructNode, FieldDeclNode, FnNode, ParamNode, DeclNode, AssignNode,
+  ast_nodes.py      the tree: Node, ProgramNode, StructNode, MemberNode, FnNode, ParamNode, DeclNode, AssignNode,
                     IfNode, WhileNode, BlockNode, ExitNode, BinOpNode, NotNode, VarNode, FieldNode, CallNode,
                     BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types

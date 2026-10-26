@@ -30,10 +30,10 @@
  * One line per declaration, assignment and exit. An if takes several: the condition
  * line, then "{", every line of the block and "}" each on a line of their own, and the
  * same again after an "else". A while takes the same shape, without the else. A struct
- * is its name line, "{", one line per field and "}"; a function is its signature line
- * and a block. NL is written out wherever a line
- * must end; blank lines carry nothing and are skipped. The lexer does not pair the
- * braces -- this grammar does.
+ * is its name line, "{", one line per field, its member functions and "}"; a function is
+ * its signature line and a block, and so is a member function. NL is written out
+ * wherever a line must end; blank lines carry nothing and are skipped. The lexer does
+ * not pair the braces -- this grammar does.
  *
  * What this grammar deliberately cannot say (those are semantics, checked by the pass in
  * src/semantic.py): that a variable was declared before it is used, that it was declared
@@ -51,7 +51,7 @@
 
 program   ::= { struct } { fn } { statement } exit
 
-struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
 
 field_decl::= type [ "mut" ] ident NL
 
@@ -83,11 +83,13 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident | field | call | "!" factor
+factor    ::= number | "true" | "false" | ident | field | call | member_call | "!" factor
 
 field     ::= ident "." ident { "." ident }
 
 call      ::= ident "(" [ expr { "," expr } ] ")"
+
+member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
 
 (* Precedence and associativity come out of the shape of the last four rules, with no
  * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
@@ -109,6 +111,14 @@ call      ::= ident "(" [ expr { "," expr } ] ")"
  * block must end with exit, which the rule cannot say (a block's exit is optional), so the
  * parser checks it. fn and struct are not statements, so neither can stand in a block.
  * A call is a factor, not a statement: it can stand only where its value is used.
+ *
+ * Inside a struct the fields come first and the member functions after them: a member
+ * function is declared by the same rule fn as any other. In a chain, after every name
+ * comes "." (the chain goes on), "(" (that name is a member function, called on the
+ * chain before it) or anything else (the chain ends), so field, call and member_call
+ * part on one token after a name, as before. A member_call ends its chain: nothing may
+ * follow its ")". Whether the chain before the last "." is an object and not a type, and
+ * whether its struct declares that function, is the semantic pass's question.
  *
  * init recurses through value, so a {} may hold {}s: Ring g{{{10, 20}, r}, {{10, 20}, 2}}.
  * Whether a value may be a {} at all depends on the type of the field it lands in, which

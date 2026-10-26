@@ -1,7 +1,7 @@
 Program
   Struct Counter
-    FieldDecl n i32 mut
-    FieldDecl total i64 mut
+    Member n i32 mut
+    Member total i64 mut
   Decl c Counter mut
     Const 0
     Const 0
