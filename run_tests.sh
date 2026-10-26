@@ -5,7 +5,8 @@
 #     NAME.in, which becomes the standard input of lli; without one it reads nothing;
 #   - tests/err/NAME.txt must fail; the error message must match NAME.expected,
 #     and no output file may be written.
-# When a NAME.ast file exists next to a program, the --ast dump must match it too.
+# When a NAME.ast file exists next to a program, the --ast dump must match it too; a
+# NAME.ast-checked file is the same for --ast-checked, the tree after the semantic pass.
 # Usage (with the llvmlite venv active):  ./run_tests.sh
 
 cd "$(dirname "$0")" || exit 2
@@ -52,6 +53,11 @@ for src in tests/ok/*.txt tests/err/*.txt; do
     if [ -f "$name.ast" ] && [ "$(python3 compiler.py --ast "$src" 2>&1)" != "$(cat "$name.ast")" ]; then
         fail "$name" "the --ast dump differs from $name.ast:" \
              "$(diff <(python3 compiler.py --ast "$src" 2>&1) "$name.ast" | tr '\n' ' ')"
+        continue
+    fi
+    if [ -f "$name.ast-checked" ] && [ "$(python3 compiler.py --ast-checked "$src" 2>&1)" != "$(cat "$name.ast-checked")" ]; then
+        fail "$name" "the --ast-checked dump differs from $name.ast-checked:" \
+             "$(diff <(python3 compiler.py --ast-checked "$src" 2>&1) "$name.ast-checked" | tr '\n' ' ')"
         continue
     fi
 

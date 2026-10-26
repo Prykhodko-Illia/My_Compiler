@@ -26,6 +26,10 @@ has a fixed shape: structs, then functions, then statements, then `exit`.
 Since Practice 7 a struct can carry **member functions** (`p.d2()`, called on an object and seeing its fields by
 name), and a program talks to the outside world: `read()` takes a number from the standard input, `print` puts
 any value — a whole object included — on the standard output.
+Since Practice 8 an object whose struct declares `call` is **callable** (`triple(14)` is `triple.call(14)`), and a
+**lambda** — a function declared where a statement stands, with copies of the variables it names in `[...]` — can
+sit in any block. Both are sugar: the semantic pass turns them into a struct, a member function and a member call,
+which the rest of the compiler already knew how to build.
 
 The grammar the parser follows is written down in [`grammar.ebnf`](grammar.ebnf).
 Nothing reaches the builder until the pass has approved the whole program.
@@ -149,6 +153,36 @@ Decl cd i32 const
     Field c.center
 ```
 
+A lambda dumps as written, its captures in brackets: `Lambda add_k [k] -> i32` over its parameters and its block.
+
+### 🔬 See the tree after the checks
+
+`--ast-checked` runs the semantic pass too and prints the tree it leaves behind — the one the code generator walks.
+That's where the sugar is gone: a call of an object is a `CallableCall`, and a lambda shows what it became — its
+struct, with one field per capture and the member function `call`, and the declaration of its variable (from
+[`tests/ok/lambda_task2-program.ast-checked`](tests/ok/lambda_task2-program.ast-checked)):
+
+```bash
+python3 compiler.py --ast-checked tests/ok/lambda_task2-program.txt
+```
+
+```
+Lambda add_k -> i32
+  Struct lambda.add_k
+    Member k i32 const
+    MemberFn call -> i32
+      Param y i32
+      Block
+        ...
+  Decl add_k lambda.add_k const
+    Var k
+Assign k
+  Const 100
+Print
+  CallableCall add_k
+    Const 5
+```
+
 ### 👁️ See what the lexer sees
 
 `--tokens` runs the lexer only and dumps every token it finds, one source line per row,
@@ -179,7 +213,8 @@ Every program lives in one of two folders, and `NAME.expected` next to it holds 
   itself in `NAME.in`, which the script passes as the standard input; without one, the input is empty.
 - `tests/err/NAME.txt` must fail. The script compares the error message with `NAME.expected` and checks that
   no output file was left behind.
-- If a `NAME.ast` file sits next to a program, the `--ast` dump must match it as well.
+- If a `NAME.ast` file sits next to a program, the `--ast` dump must match it as well; a `NAME.ast-checked`
+  file does the same for `--ast-checked`.
 
 New programs are named after the feature they exercise, `feature_variant`: `if-else_nested.txt`,
 `scope_shadow-type.txt`, `not_on-integer.txt`.
@@ -240,6 +275,7 @@ struct Circle
 | if / else | see below | runs the first block when the `bool` condition is true, else the second; `else` is optional |
 | while | see below | runs the block again and again while the `bool` condition is true |
 | print | `print(x + 1)` · `print(p)` · `print("hi")` | prints its one argument and a newline; it stands wherever a statement can |
+| lambda | `fn add_k := [k](i32 y) -> i32` and a block | declares a function on the spot, with copies of the variables in `[...]`; see below |
 | exit | `exit y` · `exit 42` · `exit !b` · `exit fib(10)` | at the top level: prints `Program exit with result <value>` and ends the program. In a function: ends the function, and its value is the result. It is the last line of its block; the program and every function end with one |
 
 ```
@@ -305,7 +341,7 @@ exit fib(10)
 - A function can call any function of the program: itself, or one declared below it.
 - A call `f(a, b)` can stand wherever a value can, with one argument per parameter (an `i32` may go into an
   `i64` parameter). A call alone on a line isn't a statement. Functions and structs are declared only at the top
-  level, never inside a block.
+  level, never inside a block — a lambda is the one function that may stand there.
 
 **Member functions**
 
@@ -349,6 +385,117 @@ struct Point                         struct Circle
   `p` stays as it was), but nothing can be assigned to it: `p.moved(1).x := 5` is an error. A `.` after a call
   whose result isn't a struct (`p.d2().x`) is an error at that `.`.
 
+**Callable objects**
+
+```
+struct Scale                         struct Shape
+{                                    {
+    i32 k                                Scale scale
+    fn call := (i32 v) -> i32            i32 side
+    {                                    fn grown := () -> i32
+        i32 r{v * k}                     {
+        exit r                               i32 g{scale(side)}
+    }                                        exit g
+}                                        }
+struct Counter                       }
+{                                    Scale triple{3}
+    i32 mut n                        Counter mut c{0}
+    fn call := () -> i32             Shape s{{2}, 5}
+    {                                print(triple(14))              42
+        n := n + 1                   print(triple.call(14))         42, the same call
+        exit n                       print(s.scale(7))              14: s.scale.call(7)
+    }                                print(s.grown())               10
+}                                    i32 a{c()}                     1
+                                     i32 b{c()}                     2
+                                     print(c)                       Counter{n: 2}
+                                     exit a * 10 + b                → Program exit with result 12
+```
+
+- A struct that declares a member function named `call` can be called like a function: `triple(14)` **is**
+  `triple.call(14)`, and the long form stays legal. The IR of the two is the same line.
+- For a name followed by `(`: a variable visible here (a local, a parameter, a field inside a member function, a
+  capture inside a lambda) is an object to call, and its struct must declare `call`; otherwise the name is a
+  function, found as before; otherwise it's unknown. A name that is **both** a visible variable and a function
+  can't be called — declaring both is fine, `twice(…)` isn't.
+- After a dot the same holds: in `s.scale(7)`, `scale` is a field of `s`, so it's `s.scale.call(7)` — inside
+  `grown`, `scale(side)` calls the field of its own object.
+- It's a member call like any other: the arguments are checked against `call`'s parameters, and a mutating
+  `call` (like `Counter`'s) obeys the mutation rule — with `Counter c{0}`, `c()` is an error.
+
+**Lambdas**
+
+```
+fn sq := (i32 v) -> i32
+{
+    i32 r{v * v}
+    exit r
+}
+fn sum_scaled := (i32 factor, i32 a, i32 b) -> i32
+{
+    fn times := [factor](i32 v) -> i32      a lambda in a function, capturing a parameter
+    {
+        i32 r{factor * sq(v)}               and calling a global function
+        exit r
+    }
+    i32 s{times(a) + times(b)}
+    exit s
+}
+i32 mut k{10}
+fn add_k := [k](i32 y) -> i32               takes a copy of k: 10
+{
+    i32 r{k + y}
+    exit r
+}
+k := 100
+print(add_k(5))                             15: the copy stayed 10
+print(k)                                    100
+print(sum_scaled(2, 3, 4))                  50
+exit add_k(1)                               → Program exit with result 11
+```
+
+- `fn name := [captures](Type a, ...) -> Type`, then a block that ends with `exit`. It stands where a statement
+  does — at the top level and inside any block: a function, a member function, an `if`, a `while`, another
+  lambda. `fn` without `[` inside a block is still an error, and so is a capture list on a member function.
+- A capture is a **copy taken at the declaration**: changing the variable afterwards doesn't change the lambda,
+  and a lambda declared in a loop takes the current value on every pass. Inside the body a capture is const.
+- The body sees its parameters, its own variables, its captures and the global functions — **nothing else**: not
+  the top-level variables, not the locals and parameters of the function around it, not the fields of the
+  struct around it, unless they are captured. A lambda can't call itself (its name is declared after its body),
+  but it may capture another lambda.
+- After its declaration, `add_k(5)` is the call of an object. That's because a lambda **is** one: a struct
+  `lambda.add_k` with one field per capture, its member function `call` with the lambda's parameters and body,
+  and a variable `add_k` of that struct, initialised right there as `lambda.add_k add_k{k}`. The dot in the
+  struct's name can't appear in a name you write, so it never clashes.
+- That struct's type has no name in the language, so a lambda can't be passed as an argument, be the value of
+  `exit`, initialise a variable or a field, be assigned or be printed, and its captures can't be read from
+  outside: `add_k.k` is an error.
+- `[mut n]` gives the lambda a copy of its own that the body may change. A call that changes it is a mutating
+  member function, so the mutation rule decides where it may be called; the lambda's variable is `mut` when any of
+  its captures is, so `next()` works where it was declared. A captured lambda is a const copy unless written
+  `[mut next]`. The variable that was captured never changes — a `mut` capture of a const variable is fine, it's
+  a copy:
+
+```
+i32 n{0}
+fn next := [mut n]() -> i32
+{
+    n := n + 1
+    exit n
+}
+print(next())                               1
+print(next())                               2
+fn twice := [mut next]() -> i32             a copy of next, whose counter is 2
+{
+    i32 a{next()}
+    i32 b{next()}
+    i32 r{a * 10 + b}
+    exit r
+}
+print(twice())                              34: counted on its own copy
+print(next())                               3: the original goes on from 2
+exit n                                      → Program exit with result 0
+```
+
 **Input and output**
 
 - `read()` reads one integer from the standard input. It is an `i32` and stands wherever a value can:
@@ -389,13 +536,14 @@ The rules:
   the top level it must be an integer or a bool.
 - Names are ASCII letters, digits and `_`, and can't start with a digit. `i32`, `i64`, `bool`, `mut`, `exit`,
   `if`, `else`, `while`, `struct`, `fn`, `true`, `false`, `read` and `print` are reserved. Functions have names of their own:
-  a variable and a function may share one, since `f(...)` and `f` can't be confused.
+  a variable and a function may share one — but then `f(...)` can't be called, since it could mean either.
 - A variable is declared once per block, before its first use, and can't appear in its own initialiser
   (in a block that shadows it, the initialiser reads the outer one).
 - Spaces and tabs separate tokens and are optional around `{`, `}`, `:=` and the operators. Blank lines are ignored.
 - Not in the language, so each of these is a compilation error: grouping parentheses (they exist only in a
   function's signature and in calls); `/`, `<`, `>` or any operator other than `+ - * == != !`; a lone `=`; a
-  sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`);
+  sign in front of a constant or a name (`-5`, `-x` — write `0 - 5`); `[` and `]` anywhere but around a
+  lambda's captures;
   two comparisons in one expression; two statements on one line; a declaration without `{}`; `{` on the `if` or
   `while` line;
   an empty block; anything after an `exit` in its block; escape sequences in a string literal (`\n` is two
@@ -463,8 +611,8 @@ have been typed.
 | Caught by | What gets you caught |
 |---|---|
 | lexer | an unknown byte (anything outside the language, including `/`, `<`, `>` on its own, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=`; a string literal not closed on its line (at its opening `"`) |
-| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a field after a member function, a member function before the first field; a function body that doesn't end with `exit`; a call alone on a line, a member call too; `:=` after a call result; `read` or `print` used as a name; `read` with an argument; `print()` or `print(a, b)`; `print` used as a value; a string literal anywhere but in `print`; a missing `,` or `)` in a signature or a call; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function. Member functions: a field and a member function with the same name, or two member functions; a name that is not a parameter, a variable or a field; a member function the struct doesn't declare, a call on an integer or a bool, a call on a type; a `.` after a call whose result isn't a struct, or a field the result doesn't have; a mutating call through a link that isn't `mut`; a write to a const field |
+| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a field after a member function, a member function before the first field; a function body that doesn't end with `exit`; a call alone on a line, a member call too; `:=` after a call result; `read` or `print` used as a name; `read` with an argument; `print()` or `print(a, b)`; `print` used as a value; a string literal anywhere but in `print`; a missing `,` or `)` in a signature or a call; a capture list on a member function, a missing `,` or `]` in one; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function. Member functions: a field and a member function with the same name, or two member functions; a name that is not a parameter, a variable or a field; a member function the struct doesn't declare, a call on an integer or a bool, a call on a type; a `.` after a call whose result isn't a struct, or a field the result doesn't have; a mutating call through a link that isn't `mut`; a write to a const field. Callable objects: a call of a variable whose struct has no `call`, or of an integer or a bool; a name that is both a variable and a function, at the call; the wrong arguments or a mutating `call` through a const link, named after the object. Lambdas: a name of the scopes around the body used without a capture; an assignment to a const capture; a name captured twice; a capture that names no visible variable; a parameter named like a capture; a lambda calling itself; a lambda passed as an argument, as the value of `exit`, in a declaration, on either side of `:=` or in `print`; a capture read from outside (`add_k.k`) |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -472,23 +620,23 @@ have been typed.
 ## 🗂️ What's in the repo
 
 ```
-compiler.py         entry point: command-line arguments, --ast, --tokens, error reporting, writes output.ll
+compiler.py         entry point: command-line arguments, --ast, --ast-checked, --tokens, error reporting, writes output.ll
 grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
   lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, STRING, COLON, EQ, BANG, MINUS)
   parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
   ast_nodes.py      the tree: Node, ProgramNode, StructNode, MemberNode, FnNode, MemberFnNode, ParamNode, ThisParam,
-                    DeclNode, AssignNode, IfNode, WhileNode, PrintNode, BlockNode, ExitNode, BinOpNode, NotNode,
-                    VarNode, FieldNode, CallNode, MemberCallNode, ResultFieldNode, InitNode, ReadNode, StringNode,
-                    BoolNode, ConstNode
+                    DeclNode, AssignNode, IfNode, WhileNode, PrintNode, LambdaNode, Capture, BlockNode, ExitNode,
+                    BinOpNode, NotNode, VarNode, FieldNode, CallNode, MemberCallNode, CallableCallNode,
+                    ResultFieldNode, InitNode, ReadNode, StringNode, BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types
                     every expression and rejects the rest
   codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — functions, named struct types, gep,
                     call, basic blocks, cbranch, sext, icmp, select, extractvalue, printf and scanf
   errors.py         CompileError with line and column
-tests/ok/           programs that must compile, with their .expected output (and .ast and .in files for some)
+tests/ok/           programs that must compile, with their .expected output (and .ast, .ast-checked and .in files for some)
 tests/err/          programs that must fail, with their .expected error message
-run_tests.sh        runs every test and compares it against its .expected (and .ast) file
+run_tests.sh        runs every test and compares it against its .expected (and .ast, .ast-checked) file
 full_compiler.sh    compiler.py + llc + clang + run, in one shot
 githooks/pre-push   runs the tests before every git push (on with: git config core.hooksPath githooks)
 .github/workflows/  tests.yml: the GitHub Actions run of the tests
@@ -501,7 +649,8 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
    only once it is complete. Every token records its kind, text, line and column.
    `!` and `-` are the states with two ways out: `=` makes `!=` and `>` makes `->`, anything else makes a lone
    `!` or `-` and is read again.
-   `{` and `}` are plain tokens — the lexer doesn't pair them, the parser does.
+   `{` and `}` are plain tokens — the lexer doesn't pair them, the parser does. So are `[` and `]`, which only
+   ever surround a lambda's captures.
    A `"` starts a string literal, which takes every byte up to the next `"` exactly as it is; a newline first is
    an error at the opening `"`.
    The result is a list of lines, each a list of tokens.
@@ -519,7 +668,10 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
    line starts with `fn` or `}`, then the same `parse_fn` reads the member functions one by one. In a chain,
    after every name comes `.` (the chain goes on), `(` (that name is a member function) or anything else (the
    chain ends) — still one token of look-ahead. After a call's `)` the chain goes on into the result: a member
-   call on it, or `ResultField` for its fields.
+   call on it, or `ResultField` for its fields. A line that starts with `fn` is a lambda when its fourth token is
+   `[` (`fn add_k := [`) — the other place the parser looks further than one token. A lambda reads its own lines,
+   like an `if`, and a lambda right after the functions is the first statement, not another function. The parser
+   can't tell `triple(14)` from `sq(14)`: both are a `Call`, and the semantic pass decides.
    It reads tokens only, never the source text, and puts no token into the tree.
    Precedence needs no table: `parse_expr` calls `parse_term` before it looks for a `+`, so everything a `*`
    glues together is already one node by the time the `+` is seen. Each loop puts what it has so far in as the
@@ -556,6 +708,22 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
      may call each other in a cycle, so one pass isn't enough. Only then is each member call checked: a mutating
      one needs a chain of `mut` links. A call result is a temporary copy, not a link, so any member function
      may be called on it.
+   - **Callable objects** are decided by the names in scope. For `name(...)`, a visible variable makes it a call of
+     that object — its struct must declare `call` — a function makes it a call as before, and both at once are an
+     error. For an object the pass puts a `CallableCall` (the target, the member function `call`, the same
+     arguments) in place of the call and checks it with the code every member call goes through, so the
+     arguments and the mutation rule come for free. `s.scale(7)`, where `scale` is a field, becomes
+     `s.scale.call(7)` the same way.
+   - **Lambdas** are rewritten here, because only here are the types of the captures known. `fn add_k := [k]…`
+     becomes a struct `lambda.add_k` — one field per capture, of the captured variable's type, `mut` only for
+     `[mut k]` — with the lambda's parameters and body as its member function `call`, and a `Decl` of `add_k`
+     initialised with the captured values. The struct joins the program's list of lambda structs, so the
+     generator builds it with the rest. The body is checked as that member function: a fresh stack with the
+     parameters, and the captures reached as fields of `this` — which is exactly "its parameters, its locals,
+     its captures and the global functions". What stood around the lambda is kept on a stack of its own, only to
+     say "`k` is not captured". The variable is declared after the body, so the lambda can't call itself, and a
+     struct with no name in the language has a type nothing can be declared with, so a lambda value goes
+     nowhere else. Two lambdas of one name in two scopes get `lambda.helper` and `lambda.helper.2`.
 5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind. It trusts the tree and checks
    nothing.
    - Every `fn` becomes a function of the module, named with a prefix (`@fn_fib`), so a function called `main` or
@@ -603,6 +771,12 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
      object's address — its `alloca`, or a `gep` into it for `c.center.d2()`. A call result is a value in
      registers: a field of it is `extractvalue` (`c.grown(3).radius`), and a member function called on it gets
      a temporary `alloca` the result is stored into, as `this`.
+   - A callable object or a lambda adds nothing here. `triple(14)` is emitted as the member call the pass put in
+     its place — `call i32 @"Scale_call"(%"Scale"* %"triple", i32 14)`, the same line as `triple.call(14)`. A
+     lambda's struct is a named type like any other, `%"lambda.add_k" = type {i32}`, its `call` is
+     `@"lambda.add_k_call"` with the object as its first parameter, and the lambda itself is the declaration of its
+     variable: an `alloca` in `entry`, then a `gep` and a `store` per capture right where the lambda stands — in a
+     loop, on every pass.
    - `read()` is `scanf("%d")` into an `alloca` in `entry`, then a `load`. `print` is the same `printf` that
      `exit` uses, with a format by type: `%d`, `%lld`, `%s` over a `select` for a bool, `%s` with the literal as
      the argument for a string (so a `%` in it stays a `%`). An object is printed by walking its field table —

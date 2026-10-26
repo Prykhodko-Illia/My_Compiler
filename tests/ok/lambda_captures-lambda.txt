@@ -1,0 +1,16 @@
+i32 base{5}
+fn add_base := [base](i32 v) -> i32
+{
+    i32 r{v + base}
+    exit r
+}
+i32 factor{3}
+fn twice_then_scale := [add_base, factor](i32 v) -> i32
+{
+    i32 once{add_base(v)}
+    i32 r{add_base(once) * factor}
+    exit r
+}
+print(add_base(1))
+print(twice_then_scale(1))
+exit twice_then_scale(0)

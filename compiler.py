@@ -1,5 +1,6 @@
 """Entry point:  python3 compiler.py <source> <output.ll>
           or:  python3 compiler.py --ast <source>
+          or:  python3 compiler.py --ast-checked <source>
           or:  python3 compiler.py --tokens <source>
 
 source bytes --lexer--> tokens --parser--> AST --semantic pass--> typed AST
@@ -36,6 +37,7 @@ def main():
     if len(args) != 2:
         print("usage: python3 compiler.py <source> <output.ll>\n"
               "       python3 compiler.py --ast <source>\n"
+              "       python3 compiler.py --ast-checked <source>\n"
               "       python3 compiler.py --tokens <source>", file=sys.stderr)
         sys.exit(2)
 
@@ -53,6 +55,15 @@ def main():
         data = read_source(args[1])
         try:
             program = parse(lex(data))
+        except CompileError as e:
+            report(e)
+        print(program.dump(), end="")
+        return
+
+    if args[0] == "--ast-checked":           # debug: the tree after the semantic pass
+        data = read_source(args[1])
+        try:
+            program = check(parse(lex(data)))
         except CompileError as e:
             report(e)
         print(program.dump(), end="")

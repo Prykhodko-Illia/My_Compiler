@@ -1,0 +1,28 @@
+struct Counter
+{
+    i32 mut n
+    fn call := () -> i32
+    {
+        n := n + 1
+        exit n
+    }
+}
+i32 step{3}
+i32 total{0}
+Counter c{0}
+fn add := [step, mut total, mut c](i32 times) -> i32
+{
+    i32 mut i{0}
+    while i != times
+    {
+        step := step + total
+        i := i + 1
+    }
+    i32 calls{c()}
+    i32 r{total * 10 + calls}
+    exit r
+}
+print(add(2))
+print(add(1))
+print(c)
+exit total
