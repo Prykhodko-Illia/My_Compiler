@@ -1,0 +1,40 @@
+# Runs the test suite on every push and on every pull request into main, on the same
+# setup the README describes: Ubuntu 24.04, LLVM 18 (lli, llc, clang), Python 3.12 and
+# llvmlite 0.49.
+name: tests
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM and clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm clang
+          lli --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install llvmlite
+        run: pip install 'llvmlite==0.49.*'
+
+      - name: Run the tests
+        run: ./run_tests.sh
+
+      # The whole chain down to a native binary: compiler.py + llc + clang + run.
+      - name: Build and run a native binary
+        run: |
+          cd "$(mktemp -d)"
+          actual=$("$GITHUB_WORKSPACE/full_compiler.sh" "$GITHUB_WORKSPACE/tests/ok/task1_program.txt")
+          echo "$actual"
+          [ "$actual" = "$(cat "$GITHUB_WORKSPACE/tests/ok/task1_program.expected")" ]
