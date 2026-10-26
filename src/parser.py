@@ -19,7 +19,10 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   expr      ::= arith [ ( "==" | "!=" ) arith ]
   arith     ::= term { ( "+" | "-" ) term }
   term      ::= factor { "*" factor }
-  factor    ::= number | "true" | "false" | ident | field | call | member_call | read | "!" factor
+  factor    ::= number | "true" | "false" | ident | field | result | "!" factor
+  result    ::= ( call | member_call | read ) { "." ident { "." ident } "(" [ args ] ")" }
+                [ "." ident { "." ident } ]
+  args      ::= expr { "," expr }
   field     ::= ident "." ident { "." ident }
   call      ::= ident "(" [ expr { "," expr } ] ")"
   member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
@@ -46,14 +49,15 @@ assignment otherwise (p := ..., p.x := ...), so there the parser looks at two to
 name followed by '(' is a call, by '.' a field chain, by anything else a variable -- one
 token after the name, so still one token of look-ahead. The same holds inside a chain: a
 '(' after one of its names makes that name a member function called on the chain before
-it, and ends the chain. It never scans further. It reads tokens only, never the source text, and puts
-no token into the tree.
+it. A call does not end the chain: a '.' after its ')' goes on into the result. It never
+scans further. It reads tokens only, never the source text, and puts no token into the
+tree.
 """
 
 from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ConstNode,
                         DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, Link, MemberCallNode,
                         MemberFnNode, MemberNode, NotNode, ParamNode, PrintNode, ProgramNode, ReadNode,
-                        StringNode, StructNode, VarNode, WhileNode)
+                        ResultFieldNode, StringNode, StructNode, VarNode, WhileNode)
 from .errors import CompileError
 
 
@@ -259,13 +263,13 @@ class Parser:
         if self.at("keyword", "builtin", "print"):
             node = self.parse_print()
         elif self.at("keyword", "builtin", "read") and is_token(second, "separator", "open"):
-            raise self.error("a call alone is not a statement: its value has to go somewhere")
+            self.call_line()
         elif self.at("keyword", "typename"):
             node = self.parse_decl()
         elif self.at("identifier") and (is_token(second, "identifier") or is_token(second, "keyword", "specifier")):
             node = self.parse_decl()                           # Point p{...}: a struct type
         elif self.at("identifier") and is_token(second, "separator", "open"):
-            raise self.error("a call alone is not a statement: its value has to go somewhere")
+            self.call_line()
         elif self.at("identifier"):
             node = self.parse_assign()
         elif self.at("keyword", "definition", "struct"):
@@ -319,13 +323,25 @@ class Parser:
 
     def parse_assign(self):
         """assign ::= ident { "." ident } ":=" expr"""
+        start = self.pos
         name = self.eat()
         links = self.parse_links()
-        if self.at("separator", "open"):                       # p.shift(2) on a line of its own
-            raise self.error("a call alone is not a statement: its value has to go somewhere", name)
+        if self.at("separator", "open"):                       # p.shift(2), p.moved(1).x := 5
+            self.pos = start
+            self.call_line()
         target = ".".join([name.text, *(link.name for link in links)])
         self.expect("operator", "assign", f"':=' after '{target}'")
         return AssignNode(name.line, name.col, name.text, links, self.parse_expr())
+
+    def call_line(self):
+        """A line that starts with a call -- f(1), p.shift(2), p.moved(1).x := 5 -- is never a
+        statement: a call alone is not one, and a call result is a temporary copy, so
+        nothing can be assigned to it. Read the chain as a value to say which."""
+        first = self.peek()
+        self.parse_factor()
+        if self.at("operator", "assign"):
+            raise self.error("cannot assign to a call result: it is a temporary copy")
+        raise self.error("a call alone is not a statement: its value has to go somewhere", first)
 
     def parse_links(self):
         """{ "." ident } -- the fields after a variable's name"""
@@ -425,13 +441,16 @@ class Parser:
         return node
 
     def parse_factor(self):
-        """factor      ::= number | "true" | "false" | ident | field | call | member_call | read | "!" factor
+        """factor      ::= number | "true" | "false" | ident | field | result | "!" factor
         field       ::= ident "." ident { "." ident }
+        result      ::= ( call | member_call | read ) { "." ident { "." ident } "(" [ args ] ")" }
+                        [ "." ident { "." ident } ]
         call        ::= ident "(" [ expr { "," expr } ] ")"
         member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
 
         After every name of a chain comes '.' (the chain goes on), '(' (that name is a
-        member function, and the chain ends at its ')') or anything else (the chain ends)."""
+        member function) or anything else (the chain ends). A call does not end the chain:
+        a '.' after its ')' goes on into the result."""
         token = self.peek()
         if token is not None and token.kind == "constant":
             # How large a constant may be is a type question: the semantic pass decides,
@@ -444,14 +463,14 @@ class Parser:
         if token is not None and token.kind == "identifier":
             self.eat()
             if self.at("separator", "open"):
-                return self.end_of_chain(self.parse_call(token))
+                return self.after_call(self.parse_call(token))
             links = self.parse_links()
             if links and self.at("separator", "open"):         # p.d2(), c.center.d2()
                 method = links.pop()
                 target = (FieldNode(token.line, token.col, token.text, links) if links
                           else VarNode(token.line, token.col, token.text))
                 args = self.parse_args(f"the call of '{method.name}'")
-                return self.end_of_chain(MemberCallNode(method.line, method.col, target, method.name, args))
+                return self.after_call(MemberCallNode(method.line, method.col, target, method.name, args))
             if links:
                 return FieldNode(token.line, token.col, token.text, links)
             return VarNode(token.line, token.col, token.text)
@@ -464,7 +483,7 @@ class Parser:
             if not self.at("separator", "close"):
                 raise self.error("read takes no arguments")
             self.eat()
-            return self.end_of_chain(ReadNode(token.line, token.col))
+            return self.after_call(ReadNode(token.line, token.col))
         if self.at("keyword", "builtin", "print"):
             raise self.error("print has no value: it is a statement")
         if token is not None and token.kind == "string":
@@ -487,11 +506,22 @@ class Parser:
         self.expect("separator", "close", f"',' or ')' in {where}")
         return args
 
-    def end_of_chain(self, call):
-        """A call ends the chain: nothing follows its ')'."""
-        if self.at("operator", "dot"):
-            raise self.error("nothing may follow a call: '.' after ')'")
-        return call
+    def after_call(self, node):
+        """The chain after a call's ')': member functions called on the result, or on a field
+        of it -- p.moved(1).shift(2), c.grown(1).center.d2() -- and then, maybe, fields of the
+        last result: c.grown(3).radius. Whether the result has fields at all is a type
+        question, so the semantic pass answers it, at the '.'."""
+        while self.at("operator", "dot"):
+            dot = self.peek()
+            links = self.parse_links()
+            if not self.at("separator", "open"):               # fields: the chain ends here
+                return ResultFieldNode(dot.line, dot.col, node, links)
+            method = links.pop()
+            if links:                                          # c.grown(1).center.d2()
+                node = ResultFieldNode(dot.line, dot.col, node, links)
+            args = self.parse_args(f"the call of '{method.name}'")
+            node = MemberCallNode(method.line, method.col, node, method.name, args)
+        return node
 
 
 def is_token(token, kind, sub=None, text=None):

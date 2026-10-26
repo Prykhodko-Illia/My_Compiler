@@ -315,8 +315,8 @@ struct Point                         struct Circle
 - A struct declares its member functions **after its fields**, each like any other function. A field and a
   member function of one struct can't share a name, and neither can two member functions.
 - A member function is called on an object with `.`: `p.d2()`, or at the end of a field chain:
-  `c.center.d2()`. The call ends the chain — nothing follows its `)`. It stands wherever a value can, and, like
-  any call, never alone on a line. It is called on an object, never on a type: `Point.d2()` is an error.
+  `c.center.d2()`. It stands wherever a value can, and, like any call, never alone on a line. It is called on
+  an object, never on a type: `Point.d2()` is an error.
 - Inside the body a name is a parameter or a variable first, then a field of the object: a parameter or a
   variable named like a field hides it. `f(...)` is a member function of the same struct first (called on the
   same object), then a global function. As in any function, a top-level variable is out of sight.
@@ -325,6 +325,11 @@ struct Point                         struct Circle
   its object or on one of its fields. A mutating one can only be called through a chain where **every link is
   `mut`** — the variable and each field on the way; any other one can be called on anything. A field without
   `mut` can't be written inside a member function either.
+- A chain goes on after a call: a field of the result, `c.grown(3).radius`, or a member function called on it,
+  `p.moved(1).shift(2)`, `c.grown(1).center.d2()`, `origin().moved(7).x`. The result is a **temporary copy** — it
+  can be read, and any member function can be called on it, a mutating one too (`shift` changes the copy, so
+  `p` stays as it was), but nothing can be assigned to it: `p.moved(1).x := 5` is an error. A `.` after a call
+  whose result isn't a struct (`p.d2().x`) is an error at that `.`.
 
 **Input and output**
 
@@ -440,8 +445,8 @@ have been typed.
 | Caught by | What gets you caught |
 |---|---|
 | lexer | an unknown byte (anything outside the language, including `/`, `<`, `>` on its own, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=`; a string literal not closed on its line (at its opening `"`) |
-| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a field after a member function, a member function before the first field; a function body that doesn't end with `exit`; a call alone on a line, a member call too; a `.` after a call's `)`; `read` or `print` used as a name; `read` with an argument; `print()` or `print(a, b)`; `print` used as a value; a string literal anywhere but in `print`; a missing `,` or `)` in a signature or a call; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function. Member functions: a field and a member function with the same name, or two member functions; a name that is not a parameter, a variable or a field; a member function the struct doesn't declare, a call on an integer or a bool, a call on a type; a mutating call through a link that isn't `mut`; a write to a const field |
+| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a field after a member function, a member function before the first field; a function body that doesn't end with `exit`; a call alone on a line, a member call too; `:=` after a call result; `read` or `print` used as a name; `read` with an argument; `print()` or `print(a, b)`; `print` used as a value; a string literal anywhere but in `print`; a missing `,` or `)` in a signature or a call; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function. Member functions: a field and a member function with the same name, or two member functions; a name that is not a parameter, a variable or a field; a member function the struct doesn't declare, a call on an integer or a bool, a call on a type; a `.` after a call whose result isn't a struct, or a field the result doesn't have; a mutating call through a link that isn't `mut`; a write to a const field |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -456,11 +461,12 @@ src/
   parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
   ast_nodes.py      the tree: Node, ProgramNode, StructNode, MemberNode, FnNode, MemberFnNode, ParamNode, ThisParam,
                     DeclNode, AssignNode, IfNode, WhileNode, PrintNode, BlockNode, ExitNode, BinOpNode, NotNode,
-                    VarNode, FieldNode, CallNode, MemberCallNode, InitNode, ReadNode, StringNode, BoolNode, ConstNode
+                    VarNode, FieldNode, CallNode, MemberCallNode, ResultFieldNode, InitNode, ReadNode, StringNode,
+                    BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types
                     every expression and rejects the rest
   codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — functions, named struct types, gep,
-                    call, basic blocks, cbranch, sext, icmp, select, printf and scanf
+                    call, basic blocks, cbranch, sext, icmp, select, extractvalue, printf and scanf
   errors.py         CompileError with line and column
 tests/ok/           programs that must compile, with their .expected output (and .ast and .in files for some)
 tests/err/          programs that must fail, with their .expected error message
@@ -491,8 +497,9 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
    a line that starts with a name: `Point p{…}` is a declaration, `p := …` an assignment, so there the parser
    looks at the second token — a name or `mut` means declaration. Inside a struct the fields are read until a
    line starts with `fn` or `}`, then the same `parse_fn` reads the member functions one by one. In a chain,
-   after every name comes `.` (the chain goes on), `(` (that name is a member function, and the chain ends at
-   its `)`) or anything else (the chain ends) — still one token of look-ahead.
+   after every name comes `.` (the chain goes on), `(` (that name is a member function) or anything else (the
+   chain ends) — still one token of look-ahead. After a call's `)` the chain goes on into the result: a member
+   call on it, or `ResultField` for its fields.
    It reads tokens only, never the source text, and puts no token into the tree.
    Precedence needs no table: `parse_expr` calls `parse_term` before it looks for a `+`, so everything a `*`
    glues together is already one node by the time the `+` is seen. Each loop puts what it has so far in as the
@@ -527,7 +534,8 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
      functions it calls on its object or its fields. Then the mutating ones are marked: the writers first, then,
      pass after pass, every function that calls a marked one, until a pass marks nothing new — member functions
      may call each other in a cycle, so one pass isn't enough. Only then is each member call checked: a mutating
-     one needs a chain of `mut` links.
+     one needs a chain of `mut` links. A call result is a temporary copy, not a link, so any member function
+     may be called on it.
 5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind. It trusts the tree and checks
    nothing.
    - Every `fn` becomes a function of the module, named with a prefix (`@fn_fib`), so a function called `main` or
@@ -572,7 +580,9 @@ full_compiler.sh    compiler.py + llc + clang + run, in one shot
      parameter is a pointer to the object — `this`. A pointer to an object is exactly what the `alloca` of a
      struct variable is, so `this` goes straight into the slot table, and a field in the body is the same `gep`
      as `p.x` outside: `x := x + dx` is a `gep` on `%this`, a `load`, an `add` and a `store`. A call passes the
-     object's address — its `alloca`, or a `gep` into it for `c.center.d2()`.
+     object's address — its `alloca`, or a `gep` into it for `c.center.d2()`. A call result is a value in
+     registers: a field of it is `extractvalue` (`c.grown(3).radius`), and a member function called on it gets
+     a temporary `alloca` the result is stored into, as `this`.
    - `read()` is `scanf("%d")` into an `alloca` in `entry`, then a `load`. `print` is the same `printf` that
      `exit` uses, with a format by type: `%d`, `%lld`, `%s` over a `select` for a bool, `%s` with the literal as
      the argument for a string (so a `%` in it stays a `%`). An object is printed by walking its field table —

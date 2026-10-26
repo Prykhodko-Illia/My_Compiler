@@ -1,0 +1,1 @@
+compilation error: line 1:13: 'read()' is i32, not a struct: it has no field 'x'

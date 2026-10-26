@@ -86,8 +86,12 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident | field | call | member_call | read
-            | "!" factor
+factor    ::= number | "true" | "false" | ident | field | result | "!" factor
+
+result    ::= ( call | member_call | read ) { "." ident { "." ident } "(" [ args ] ")" }
+            [ "." ident { "." ident } ]
+
+args      ::= expr { "," expr }
 
 field     ::= ident "." ident { "." ident }
 
@@ -124,9 +128,17 @@ print     ::= "print" "(" ( string | expr ) ")"
  * function is declared by the same rule fn as any other. In a chain, after every name
  * comes "." (the chain goes on), "(" (that name is a member function, called on the
  * chain before it) or anything else (the chain ends), so field, call and member_call
- * part on one token after a name, as before. A member_call ends its chain: nothing may
- * follow its ")". Whether the chain before the last "." is an object and not a type, and
- * whether its struct declares that function, is the semantic pass's question.
+ * part on one token after a name, as before. Whether the chain before the last "." is an
+ * object and not a type, and whether its struct declares that function, is the semantic
+ * pass's question.
+ *
+ * A call does not end its chain: result goes on after its ")" into the value it returns
+ * -- member functions called on it or on a field of it, p.moved(1).shift(2) and
+ * c.grown(1).center.d2(), then maybe fields of the last result, c.grown(3).radius.
+ * Whether a result has fields at all is the semantic pass's question too: a "." after a
+ * call that returns an i32 is its error, at that ".". A result is a temporary copy, so a
+ * result never stands to the left of ":=": assign starts with ident { "." ident }, and a
+ * "(" there is an error.
  *
  * read and print are keywords, not names, so neither can name a variable, a function, a
  * parameter, a field or a member function. read is a factor with an i32 value; print is

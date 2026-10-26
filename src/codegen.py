@@ -49,6 +49,12 @@ x in the body -- indices [0] on this -- is the same gep as p.x on a variable. A 
 passes the address of its object: the variable's alloca, or a gep into it for
 c.center.d2(); a member function calling one of its own struct's passes `this` on.
 
+A call result is a value in registers, not an object in memory. A field of it is
+extractvalue by the same field numbers a gep would take: c.grown(3).radius. A member
+function needs an address, so a result it is called on -- p.moved(1).shift(2) -- is
+stored into a temporary slot first, and that slot is `this`: a mutating function changes
+the copy, which nobody sees again.
+
 print is printf, the same declaration exit uses, with a format by type: "%d\n" for an
 i32, "%lld\n" for an i64, "%s\n" for a bool (a select between the global strings "true"
 and "false") and for a string literal, whose text goes in as the argument so a % in it
@@ -351,7 +357,8 @@ class CodeGen:
 
     def object_address(self, value):
         """Where a struct value lives: a variable or a field chain has a place already; any
-        other value -- a call result -- is stored into a slot of its own first."""
+        other value -- a call result, or a field of one -- is stored into a slot of its own
+        first."""
         if isinstance(value, (VarNode, FieldNode)):
             return self.address_of(value)
         slot = self.alloca_in_entry(self.types[value.type], "tmp")
@@ -401,8 +408,11 @@ class CodeGen:
         return self.builder.call(self.fns[node.fn], [*this, *self.args(node)], name=node.name)
 
     def visit_member_call(self, node):
-        this = self.address_of(node.target)                      # the object, by address
+        this = self.object_address(node.target)                  # the object, by address
         return self.builder.call(self.fns[node.fn], [this, *self.args(node)], name=node.name)
+
+    def visit_result_field(self, node):
+        return self.builder.extract_value(node.value.accept(self), node.indices, name=node.links[-1].name)
 
     def args(self, node):
         return [self.coerce(arg.accept(self), arg.type, param.type_name)    # an i32 into an i64 parameter

@@ -86,11 +86,13 @@ The member function rules:
     functions;
   * a member function is called on an object of a struct that declares it -- never on a
     type, never on an integer or a bool;
-  * a mutating one is called only through a chain of mut links.
+  * a mutating one is called only through a chain of mut links;
+  * a call result is a temporary copy: a field of it may be read when it is a struct, and
+    any member function may be called on it, a mutating one too.
 """
 
-from .ast_nodes import (ConstNode, DeclNode, InitNode, Link, MemberFnNode, MemberNode, ParamNode,
-                        ThisParam, chain)
+from .ast_nodes import (CallNode, ConstNode, DeclNode, FieldNode, InitNode, Link, MemberCallNode, MemberFnNode,
+                        MemberNode, ParamNode, ReadNode, ResultFieldNode, ThisParam, VarNode, chain)
 from .errors import CompileError, error_at
 
 I32_MAX = 2**31 - 1
@@ -441,7 +443,8 @@ class SemanticChecker:
 
     def visit_member_call(self, node):
         target = node.target
-        if self.find(target.name) is None and target.name in self.structs:
+        named_object = isinstance(target, (VarNode, FieldNode))   # else a call result, or a field of one
+        if named_object and self.find(target.name) is None and target.name in self.structs:
             raise error_at(target, f"'{node.name}' is called on the type '{target.name}': "
                                    f"a member function is called on an object")
         type_name = target.accept(self)
@@ -453,7 +456,7 @@ class SemanticChecker:
         if fn is None:
             raise error_at(node, f"struct '{struct.name}' has no member function '{node.name}'")
         self.check_args(node, fn)
-        if isinstance(target.decl, ThisParam):     # on its own object, or on one of its fields
+        if named_object and isinstance(target.decl, ThisParam):   # on its own object, or a field of it
             self.current_fn.calls_on_self.append(fn)
         node.fn = fn
         node.type = fn.result_type
@@ -464,11 +467,27 @@ class SemanticChecker:
         return node.type
 
     def check_mutation(self, node):
-        """A mutating member function is called only through a chain of mut links."""
+        """A mutating member function is called only through a chain of mut links. A call
+        result is a temporary copy, not a link: changing it changes nobody's object."""
         target = node.target
-        if node.fn.mutating and target.const_link:
+        if node.fn.mutating and isinstance(target, (VarNode, FieldNode)) and target.const_link:
             raise error_at(node, f"cannot call '{node.name}' on '{written(target)}': "
                                  f"it changes the object, and '{target.const_link}' is not mut")
+
+    def visit_result_field(self, node):
+        """A field of a call result: the result must be a struct -- an error at the '.' when
+        it is not -- and then every link must be a field, as in a chain."""
+        type_name, path = node.value.accept(self), written(node.value)
+        if type_name not in self.structs:
+            raise error_at(node, f"'{path}' is {type_name}, not a struct: it has no field '{node.links[0].name}'")
+        indices = []
+        for link in node.links:
+            field = self.field_of(type_name, link, path)
+            path += "." + link.name
+            indices.append(field.index)
+            type_name = field.type_name
+        node.indices, node.type = indices, type_name
+        return node.type
 
     def check_args(self, node, fn):
         """One argument per parameter, each assignable to the parameter's type."""
@@ -511,9 +530,17 @@ def named(nodes, name):
     return next((node for node in nodes if node.name == name), None)
 
 
-def written(target):
-    """The object of a member call as the program wrote it: p, c.center."""
-    return chain(target.name, getattr(target, "links", []))
+def written(expr):
+    """An object as the program wrote it, for a message: p, c.center, p.moved(...).x."""
+    if isinstance(expr, MemberCallNode):
+        return f"{written(expr.target)}.{expr.name}(...)"
+    if isinstance(expr, CallNode):
+        return f"{expr.name}(...)"
+    if isinstance(expr, ReadNode):
+        return "read()"
+    if isinstance(expr, ResultFieldNode):
+        return written(expr.value) + "".join(f".{link.name}" for link in expr.links)
+    return chain(expr.name, getattr(expr, "links", []))
 
 
 def qualified(fn):

@@ -28,7 +28,8 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
         +-- FieldNode    name, links: [Link]   -- c.center.x: the variable, then each field
         +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
-        +-- MemberCallNode  target: VarNode | FieldNode, name, args: [ExprNode] -- c.center.d2()
+        +-- MemberCallNode  target: ExprNode, name, args: [ExprNode] -- c.center.d2(), p.moved(1).shift(2)
+        +-- ResultFieldNode value: ExprNode, links: [Link]  -- a field of a call result: c.grown(3).radius
         +-- InitNode     values: [ExprNode]     -- an inner {} for a struct field: {10, 20}
         +-- ReadNode                         -- read(): one i32 from the standard input
         +-- StringNode   text                -- a string literal, only the value of a print
@@ -50,7 +51,7 @@ The semantic pass writes, and the code generator reads -- which is their whole c
   * `decl` on every VarNode, FieldNode and AssignNode (the DeclNode or ParamNode the name
     resolved to -- or, for a field named inside a member function, its ThisParam);
   * `fn` on every CallNode and MemberCallNode (the FnNode or MemberFnNode it calls);
-  * `indices` on every VarNode, FieldNode and AssignNode: the field chain as field
+  * `indices` on every VarNode, FieldNode, ResultFieldNode and AssignNode: the field chain as field
     numbers, so c.center.x is [0, 0] -- the generator never looks a field up by name. A
     variable has none; a field x named inside a member function starts from the object,
     so it is [0] on its ThisParam;
@@ -440,12 +441,12 @@ class CallNode(ExprNode):
 
 class MemberCallNode(ExprNode):
     """A call of a member function on an object: p.d2(), c.center.d2(). The object is
-    the chain before the last '.', the name after it is the function; the call ends the
-    chain."""
+    the chain before the last '.', the name after it is the function. The object may be a
+    call result too, or a field of one: p.moved(1).shift(2), c.grown(1).center.d2()."""
 
     def __init__(self, line, col, target, name, args):
         super().__init__(line, col)       # position of the member function's name
-        self.target = target              # VarNode | FieldNode: the object it is called on
+        self.target = target              # the object it is called on: VarNode | FieldNode, or a result
         self.name = name
         self.args = args                  # [ExprNode]
         self.fn = None                    # MemberFnNode, set by the semantic pass
@@ -458,6 +459,26 @@ class MemberCallNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_member_call(self)
+
+
+class ResultFieldNode(ExprNode):
+    """A field of a call result: c.grown(3).radius, origin().moved(7).x. The result is a
+    temporary copy, not a variable: it can be read, never written."""
+
+    def __init__(self, line, col, value, links):
+        super().__init__(line, col)       # position of the '.' after the call
+        self.value = value                # ExprNode: the call
+        self.links = links                # [Link], at least one
+        self.indices = []                 # the links as field numbers, set by the semantic pass
+
+    def label(self):
+        return "ResultField " + ".".join(link.name for link in self.links)
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_result_field(self)
 
 
 class InitNode(ExprNode):
