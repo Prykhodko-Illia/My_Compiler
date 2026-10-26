@@ -11,11 +11,16 @@
  *   "i32" "i64" "bool"    keyword tokens: the type names
  *   "mut" "exit"          keyword tokens
  *   "if" "else" "while"   keyword tokens
+ *   "struct" "fn"         keyword tokens
  *   "true" "false"        keyword tokens: the boolean literals
  *   "{" "}"               block tokens
  *   ":=" "+" "-" "*"      operator tokens
  *   "==" "!="             operator tokens, two bytes each
  *   "!"                   operator token: a '!' not followed by '='
+ *   "."                   operator token: a field of an object
+ *   "->"                  operator token, two bytes: before a function's result type
+ *   ","                   separator token: between values, parameters and arguments
+ *   "(" ")"               separator tokens: only around parameters and arguments
  *   ident                 identifier token: letters, digits and _, not starting with a
  *                         digit, and not a keyword -- how it is spelled is the lexer's rule
  *   number                constant token: decimal digits, no sign
@@ -24,26 +29,45 @@
  *
  * One line per declaration, assignment and exit. An if takes several: the condition
  * line, then "{", every line of the block and "}" each on a line of their own, and the
- * same again after an "else". A while takes the same shape, without the else. NL is written out wherever a line must end; blank lines
- * carry nothing and are skipped. The lexer does not pair the braces -- this grammar does.
+ * same again after an "else". A while takes the same shape, without the else. A struct
+ * is its name line, "{", one line per field and "}"; a function is its signature line
+ * and a block. NL is written out wherever a line
+ * must end; blank lines carry nothing and are skipped. The lexer does not pair the
+ * braces -- this grammar does.
  *
  * What this grammar deliberately cannot say (those are semantics, checked by the pass in
  * src/semantic.py): that a variable was declared before it is used, that it was declared
  * only once in its block, which declaration a name means when a block shadows it, that it
  * is "mut" before it is assigned, and every type rule -- that "+" takes two integers, that
  * a comparison gives a bool, that an i32 may widen into an i64, that the condition of an
- * if or a while and the operand of "!" are bools.
+ * if or a while and the operand of "!" are bools -- and every struct rule: that a type name
+ * is a struct declared above, that a struct does not contain itself, that an object gets
+ * one value per field, that a field chain names fields that exist, and that every link of
+ * a chain written through is "mut" -- and every function rule: that a call names a
+ * declared function with one argument of the right type per parameter, that exit in a
+ * function has its result type, that a parameter is never assigned, and that a body sees
+ * no top-level variable.
  *)
 
-program   ::= { statement } exit
+program   ::= { struct } { fn } { statement } exit
+
+struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+
+field_decl::= type [ "mut" ] ident NL
+
+fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
 statement ::= decl | assign | if | while
 
-decl      ::= type [ "mut" ] ident "{" expr "}"
+decl      ::= type [ "mut" ] ident init
 
-type      ::= "i32" | "i64" | "bool"
+init      ::= "{" value { "," value } "}"
 
-assign    ::= ident ":=" expr
+value     ::= expr | init
+
+type      ::= "i32" | "i64" | "bool" | ident
+
+assign    ::= ident { "." ident } ":=" expr
 
 if        ::= "if" expr NL block [ "else" NL block ]
 
@@ -59,7 +83,11 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident | "!" factor
+factor    ::= number | "true" | "false" | ident | field | call | "!" factor
+
+field     ::= ident "." ident { "." ident }
+
+call      ::= ident "(" [ expr { "," expr } ] ")"
 
 (* Precedence and associativity come out of the shape of the last four rules, with no
  * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
@@ -69,13 +97,26 @@ factor    ::= number | "true" | "false" | ident | "!" factor
  * far as the left child, so 10 - 3 - 2 parses as (10 - 3) - 2 -- left associativity.
  *
  * expr has no loop around the comparison, so at most one comparison per expression.
- * There are no parentheses in the language yet.
+ * Parentheses appear only in fn and call: there are still no grouping parentheses.
  *
  * "!" lives in factor, so it binds tighter than any operator and applies to the factor
  * right after it: !a == b compares !a with b. "!" factor recurses, so !!a is allowed.
  *
- * Note that exit takes a factor, not an expr: a single constant, boolean literal or
- * variable -- or one of those under "!" -- never an operation.
+ * Note that exit takes a factor, not an expr: a single constant, boolean literal,
+ * variable, field chain or call -- or one of those under "!" -- never an operation.
+ *
+ * The order of program is fixed: structs, then functions, then statements. A function's
+ * block must end with exit, which the rule cannot say (a block's exit is optional), so the
+ * parser checks it. fn and struct are not statements, so neither can stand in a block.
+ * A call is a factor, not a statement: it can stand only where its value is used.
+ *
+ * init recurses through value, so a {} may hold {}s: Ring g{{{10, 20}, r}, {{10, 20}, 2}}.
+ * Whether a value may be a {} at all depends on the type of the field it lands in, which
+ * the grammar does not know, so the semantic pass checks it: a {} only for a struct.
+ *
+ * type ::= ident is what makes a line starting with a name ambiguous: "Point p{...}" is a
+ * decl, "p := ..." and "p.x := ..." are assigns. The second token decides -- a name or
+ * "mut" means decl -- the one place the parser looks two tokens ahead.
  *
  * A block may not be empty: it holds at least one statement or an exit, which the rule
  * cannot say on its own, so the parser checks it. An exit ends its block, as it ends the

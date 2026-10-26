@@ -1,0 +1,1 @@
+compilation error: line 12:1: exit takes an integer or a bool, got Point

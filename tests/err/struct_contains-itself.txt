@@ -1,0 +1,6 @@
+struct Node
+{
+    i32 v
+    Node next
+}
+exit 0

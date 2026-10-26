@@ -1,0 +1,9 @@
+fn f := (i32 a) -> i32
+{
+    exit a
+}
+fn f := (i32 b) -> i32
+{
+    exit b
+}
+exit 0

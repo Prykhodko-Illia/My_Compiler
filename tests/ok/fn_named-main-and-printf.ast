@@ -1,0 +1,13 @@
+Program
+  Fn main -> i32
+    Block
+      Exit
+        Const 7
+  Fn printf -> i32
+    Param a i32
+    Block
+      Exit
+        Var a
+  Exit
+    Call printf
+      Call main

@@ -1,0 +1,38 @@
+Program
+  Struct Point
+    FieldDecl x i32 mut
+    FieldDecl y i32 mut
+  Struct Circle
+    FieldDecl center Point const
+    FieldDecl radius i64 mut
+  Struct Ring
+    FieldDecl outer Circle const
+    FieldDecl inner Circle const
+  Decl r i32 const
+    Const 5
+  Decl g Ring const
+    Init
+      Init
+        Const 10
+        Const 20
+      Var r
+    Init
+      Init
+        Const 10
+        Const 20
+      Const 2
+  Decl c Circle const
+    Init
+      Const 1
+      Const 2
+    BinOp *
+      Field g.outer.radius
+      Const 3
+  Decl result i64 const
+    BinOp +
+      BinOp +
+        Field c.radius
+        Field g.inner.center.y
+      Field c.center.x
+  Exit
+    Var result

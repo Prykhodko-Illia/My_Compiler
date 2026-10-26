@@ -1,0 +1,17 @@
+fn isEven := (i32 n) -> bool
+{
+    if n == 0
+    {
+        exit true
+    }
+    exit isOdd(n - 1)
+}
+fn isOdd := (i32 n) -> bool
+{
+    if n == 0
+    {
+        exit false
+    }
+    exit isEven(n - 1)
+}
+exit isEven(10)

@@ -1,0 +1,12 @@
+struct W
+{
+    i64 mut big
+    bool flag
+}
+W w{7, true}
+i64 b{w.big * 3000000000}
+if w.flag
+{
+    exit b
+}
+exit 0

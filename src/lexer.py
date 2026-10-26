@@ -1,13 +1,14 @@
 """Phase 0: bytes -> tokens  (lexical errors only)
 
 A hand-written state machine: one loop, one byte per step. The state says
-what we are in the middle of (nothing, a word, a number, a ':', an '=', a '!'),
+what we are in the middle of (nothing, a word, a number, a ':', an '=', a '!', a '-'),
 the byte's class says what happens next. A byte that ends a token is read again
 in START (`continue` without advancing) -- the only byte ever re-examined.
 
-The two-byte operators ('==', '!=', ':=') each get a state that accepts exactly
-one more byte, so the scanner never looks ahead. '!' is the one state with two
-ways out: '=' makes '!=', anything else makes a lone '!' and is read again.
+The two-byte operators ('==', '!=', ':=', '->') each get a state that accepts exactly
+one more byte, so the scanner never looks ahead. '!' and '-' are the states with two
+ways out: '=' makes '!=' and '>' makes '->', anything else makes a lone '!' or '-' and
+is read again.
 
 '{' and '}' are plain tokens: a block spans lines now, so pairing them is the
 parser's job, not the lexer's.
@@ -20,12 +21,13 @@ from .errors import CompileError
 
 @dataclass
 class Token:
-    kind: str        # keyword | identifier | constant | block | operator | endline
+    kind: str        # keyword | identifier | constant | block | operator | separator | endline
     text: str
     line: int
     col: int         # 1-based position of the token's first byte
-    sub: str = ""    # typename | specifier | statement | branch | loop | boolean | numeric
-                     # start | end | assign | plus | minus | times | eq | ne | not
+    sub: str = ""    # typename | specifier | statement | branch | loop | definition | boolean
+                     # numeric | start | end | assign | plus | minus | times | eq | ne | not
+                     # dot | arrow | comma | open | close
 
     def __str__(self):
         text = "\\n" if self.kind == "endline" else self.text
@@ -42,6 +44,8 @@ KEYWORDS = {
     b"if": "branch",
     b"else": "branch",
     b"while": "loop",
+    b"struct": "definition",
+    b"fn": "definition",
     b"true": "boolean",
     b"false": "boolean",
 }
@@ -50,12 +54,15 @@ SINGLE_BYTE = {                  # tokens that are complete after one byte
     ord("{"): ("block", "start"),
     ord("}"): ("block", "end"),
     ord("+"): ("operator", "plus"),
-    ord("-"): ("operator", "minus"),
     ord("*"): ("operator", "times"),
+    ord("."): ("operator", "dot"),          # c.center.x
+    ord(","): ("separator", "comma"),       # Point p{10, 20}, f(a, b)
+    ord("("): ("separator", "open"),        # only around parameters and arguments:
+    ord(")"): ("separator", "close"),       # there are no grouping parentheses
 }
 
 SPACE, TAB, NEWLINE = 32, 9, 10
-COLON, EQUALS, BANG = ord(":"), ord("="), ord("!")
+COLON, EQUALS, BANG, MINUS, GREATER = ord(":"), ord("="), ord("!"), ord("-"), ord(">")
 
 
 def is_alpha(b):
@@ -100,6 +107,8 @@ def lex(data: bytes):
                 state, start_col = "EQ", col
             elif b == BANG:
                 state, start_col = "BANG", col
+            elif b == MINUS:
+                state, start_col = "MINUS", col
             elif b in SINGLE_BYTE:
                 kind, sub = SINGLE_BYTE[b]
                 tokens.append(Token(kind, chr(b), line, col, sub))
@@ -148,6 +157,15 @@ def lex(data: bytes):
                 state = "START"
             else:                            # a lone '!': the negation
                 tokens.append(Token("operator", "!", line, start_col, "not"))
+                state = "START"
+                continue                     # re-read this byte in START
+
+        elif state == "MINUS":
+            if b == GREATER:
+                tokens.append(Token("operator", "->", line, start_col, "arrow"))
+                state = "START"
+            else:                            # a lone '-': the subtraction
+                tokens.append(Token("operator", "-", line, start_col, "minus"))
                 state = "START"
                 continue                     # re-read this byte in START
 

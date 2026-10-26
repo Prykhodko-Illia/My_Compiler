@@ -1,0 +1,20 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+}
+struct Circle
+{
+    Point center
+    i64 mut radius
+}
+if true
+{
+    Circle mut c{{1, 2}, 3}
+    while c.radius != 6
+    {
+        c.radius := c.radius + 1
+    }
+    exit c.radius
+}
+exit 0

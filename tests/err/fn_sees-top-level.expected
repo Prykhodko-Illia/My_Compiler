@@ -1,0 +1,1 @@
+compilation error: line 3:15: function 'f' cannot see the top-level variable 'g': a function sees only its parameters and its own variables
