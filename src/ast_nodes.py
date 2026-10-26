@@ -20,6 +20,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
     |   +-- IfNode       condition: ExprNode, then_block: BlockNode, else_block: BlockNode | None
     |   +-- WhileNode    condition: ExprNode, body: BlockNode
     |   +-- PrintNode    value: ExprNode     -- print(x): prints x and a newline
+    |   +-- LambdaNode   name, captures: [Capture], params, result_type, body -- later struct, decl
     +-- BlockNode        statements: [StmtNode], exit: ExitNode | None
     +-- ExitNode         value: ExprNode
     +-- ExprNode   (abstract)      -- also carries `type`, filled in by the semantic pass
@@ -124,6 +125,9 @@ class ProgramNode(Node):
         self.fns = fns                    # [FnNode], after the structs, before the statements
         self.statements = statements      # [StmtNode]
         self.exit = exit                  # ExitNode
+        # The struct of every lambda, made by the semantic pass in the order it meets them.
+        # Not a child: in the tree each one stands under its LambdaNode.
+        self.lambda_structs = []          # [StructNode]
 
     def label(self):
         return "Program"
@@ -196,6 +200,7 @@ class MemberFnNode(FnNode):
         self.assigns_field = False        # its body writes a field of its object
         self.calls_on_self = []           # [MemberFnNode] it calls on its object or on one of its fields
         self.mutating = False             # it changes its object, directly or through a call
+        self.lambda_name = None           # the lambda's name when this is the call of its struct
 
     def label(self):
         return f"MemberFn {self.name} -> {self.result_type}"
@@ -322,6 +327,46 @@ class PrintNode(StmtNode):
 
     def accept(self, visitor):
         return visitor.visit_print(self)
+
+
+class Capture:
+    """One name of a lambda's capture list, where it was written."""
+
+    def __init__(self, name, line, col):
+        self.name = name
+        self.line = line
+        self.col = col
+
+
+class LambdaNode(StmtNode):
+    """fn add_k := [k](i32 y) -> i32 and a block: a function declared where a statement
+    stands, with copies of the variables it names in brackets. The semantic pass turns it
+    into what the compiler already has -- a struct with one field per capture, its member
+    function call, and a variable of that struct -- and keeps those in `struct` and `decl`.
+    Before that the tree shows the lambda as written; after it, what it became."""
+
+    def __init__(self, line, col, name, captures, params, result_type, result_at, body):
+        super().__init__(line, col)       # position of the name
+        self.name = name
+        self.captures = captures          # [Capture], maybe none
+        self.params = params              # [ParamNode], maybe none
+        self.result_type = result_type
+        self.result_at = result_at        # (line, col) of the result type
+        self.body = body                  # BlockNode: its last line is an exit
+        self.struct = None                # StructNode lambda.<name>, set by the semantic pass
+        self.decl = None                  # DeclNode of the variable <name>, set by the semantic pass
+
+    def label(self):
+        if self.struct:
+            return f"Lambda {self.name} -> {self.result_type}"
+        captures = ", ".join(capture.name for capture in self.captures)
+        return f"Lambda {self.name} [{captures}] -> {self.result_type}"
+
+    def children(self):
+        return [self.struct, self.decl] if self.struct else [*self.params, self.body]
+
+    def accept(self, visitor):
+        return visitor.visit_lambda(self)
 
 
 class BlockNode(Node):

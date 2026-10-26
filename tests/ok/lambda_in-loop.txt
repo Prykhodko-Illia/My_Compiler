@@ -1,0 +1,14 @@
+i32 mut i{1}
+i32 mut total{0}
+while i != 4
+{
+    fn scaled := [i](i32 v) -> i32
+    {
+        i32 r{v * i}
+        exit r
+    }
+    i := i + 1
+    print(scaled(10))
+    total := total + scaled(1)
+}
+exit total

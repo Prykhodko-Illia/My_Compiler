@@ -1,0 +1,1 @@
+compilation error: line 4:5: a function is declared at the top level, after the structs and before every statement

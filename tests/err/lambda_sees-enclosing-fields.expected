@@ -1,0 +1,1 @@
+compilation error: line 8:23: 'k' is not captured by lambda 'times': add it to the capture list, [k]

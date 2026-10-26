@@ -22,6 +22,7 @@
  *   "->"                  operator token, two bytes: before a function's result type
  *   ","                   separator token: between values, parameters and arguments
  *   "(" ")"               separator tokens: only around parameters and arguments
+ *   "[" "]"               separator tokens: only around a lambda's captures
  *   ident                 identifier token: letters, digits and _, not starting with a
  *                         digit, and not a keyword -- how it is spelled is the lexer's rule
  *   number                constant token: decimal digits, no sign
@@ -60,7 +61,10 @@ field_decl::= type [ "mut" ] ident NL
 
 fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
-statement ::= decl | assign | if | while | print
+statement ::= decl | assign | if | while | print | lambda
+
+lambda    ::= "fn" ident ":=" "[" [ ident { "," ident } ] "]"
+              "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
 decl      ::= type [ "mut" ] ident init
 
@@ -122,6 +126,17 @@ print     ::= "print" "(" ( string | expr ) ")"
  * The order of program is fixed: structs, then functions, then statements. A function's
  * block must end with exit, which the rule cannot say (a block's exit is optional), so the
  * parser checks it. fn and struct are not statements, so neither can stand in a block.
+ *
+ * A lambda is a statement: a function with a capture list in "[" "]", standing among the
+ * top-level statements or in any block. It starts like fn, so the parser tells the two
+ * apart by the fourth token -- "[" after fn ident ":=" -- and a fn without it inside a
+ * block stays an error, as does a capture list on a member function. A lambda is the
+ * first statement when it stands right after the functions. Its body ends with exit, as
+ * a function's does. What a lambda may capture and see is the semantic pass's question.
+ *
+ * name(...) is a call whatever the name is: whether it is a function or an object whose
+ * struct declares call -- triple(14), which is triple.call(14) -- depends on the names in
+ * scope, which the grammar does not know.
  * A call is a factor, not a statement: it can stand only where its value is used.
  *
  * Inside a struct the fields come first and the member functions after them: a member
