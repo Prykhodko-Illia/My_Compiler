@@ -189,6 +189,24 @@ program that does, is reported as such. You get `PASS` or `FAIL` for each test, 
 test fails, the script exits with a non-zero code. To add a test, drop a `.txt` and a `.expected` into the
 folder that matches what it should do.
 
+### 🚦 Before a push and on GitHub
+
+GitHub Actions runs the same tests on every push and every pull request into `main`
+([`.github/workflows/tests.yml`](.github/workflows/tests.yml)): Ubuntu 24.04, LLVM 18, Python 3.12 and llvmlite,
+then `./run_tests.sh` and one `full_compiler.sh` build down to a native binary.
+
+To catch a failure before it leaves your machine, turn on the pre-push hook, once per clone:
+
+```bash
+git config core.hooksPath githooks
+```
+
+Now every `git push` runs `./run_tests.sh` first and stops if a test fails, showing only the failures and the
+summary (the full output stays in `.git/pre-push.log`). No `lli` or llvmlite on the machine, like on macOS? The
+hook runs the tests in the Multipass VM `noble-compilers` instead, with the repository at `~/compilers` and the
+venv at `~/lcd`; set `COMPILERS_VM`, `COMPILERS_VM_REPO` or `COMPILERS_VM_VENV` if yours differ. It tests the
+working tree, uncommitted changes included. In a hurry? `git push --no-verify` skips it.
+
 ---
 
 ## 📜 The language
@@ -472,6 +490,8 @@ tests/ok/           programs that must compile, with their .expected output (and
 tests/err/          programs that must fail, with their .expected error message
 run_tests.sh        runs every test and compares it against its .expected (and .ast) file
 full_compiler.sh    compiler.py + llc + clang + run, in one shot
+githooks/pre-push   runs the tests before every git push (on with: git config core.hooksPath githooks)
+.github/workflows/  tests.yml: the GitHub Actions run of the tests
 ```
 
 ### 🔦 How it works

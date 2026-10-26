@@ -7,8 +7,8 @@ Date:    2026-10-26
 Setup:   I created the ci-integration branch from main myself. The AI edited files in
          ~/Study/compilers and checked the result on my Multipass VM (noble-compilers) with
          `multipass exec`, where the repository is mounted at ~/compilers. On my request it made
-         the commits (under my git user, with no AI co-author line); pushing the branch and
-         opening the pull request are mine.
+         the commits (under my git user, with no AI co-author line), pushed ci-integration, and
+         opened and merged pull request #7 with gh.
 
 Below is every prompt I sent about the CI, quoted as written, followed by what the AI did.
 
@@ -58,20 +58,83 @@ Below is every prompt I sent about the CI, quoted as written, followed by what t
    commits, under my git user, with no AI co-author line.
 
 
+3. Prompt:
+   "push and merge after successful run, gh should work"
+
+   What the AI did:
+   Pushed ci-integration and opened pull request #7 into main with gh (title "CI integration",
+   a one-line description and no AI attribution line). Checked whether GitHub could merge it by
+   itself once the run passed: auto-merge is turned off for the repository and main has no
+   required checks, so it could not. The AI did not change those settings; it stopped and
+   asked me to say when to check the run.
+
+
+4. Prompt:
+   "Check the CI run on PR #7; if it passed, merge it with a merge commit like the earlier
+   practice PRs"
+
+   What the AI did:
+   Read the runs with gh. The pull_request run had passed ("200 passed, 0 failed" in the tests
+   step and "Program exit with result 385" in the native step), and every step of the push run
+   had passed. Merged #7 with a merge commit titled "Merge pull request (CI integration)" with
+   the body "CI integration", like the earlier practice merges, then switched to main and
+   pulled it. Afterwards both runs on the branch showed success. The run that the merge started
+   on main was not checked.
+
+
+5. Prompt:
+   "also, add some pre-push hook that runs tests as well"
+
+   What the AI did:
+   Created the pre-push-hook branch from main. Added githooks/pre-push, a hook kept in the
+   repository and turned on with `git config core.hooksPath githooks` (git does not track
+   .git/hooks, and this way the hook is part of the repository). Before every push it runs
+   ./run_tests.sh and stops the push if a test fails. It prints only the FAIL lines and the
+   summary; the full output goes to .git/pre-push.log. Where lli and llvmlite are missing, as
+   on my Mac, it runs the tests in the Multipass VM instead (noble-compilers, ~/compilers and
+   ~/lcd by default, changeable with COMPILERS_VM, COMPILERS_VM_REPO and COMPILERS_VM_VENV).
+   With neither, it refuses the push and points at `git push --no-verify`. The tests run on the
+   working tree, so uncommitted changes are tested as well. Turned the hook on in my clone with
+   git config.
+
+   Checked it with `git push --dry-run`, which runs the hook but sends nothing: with the
+   tests as they are, the hook printed "200 passed, 0 failed" and let the push through. With a
+   throwaway test whose .expected was wrong (tests/ok/zz_hook-check), it printed the FAIL and
+   "200 passed, 1 failed" and git refused the push. The AI then removed the throwaway test and
+   checked that the branch was not on GitHub.
+
+   Added a section about CI and the hook to the tests part of README.md, two lines to its file
+   list, and entries 3-5 to this file.
+
+
+6. Prompt:
+   "Commit on pre-push-hook with no AI co-author line, push, open a PR into main, and merge it
+   with a merge commit once CI passes"
+
+   What the AI did:
+   Added this entry, then committed the hook with the README changes and, separately, this
+   file on pre-push-hook, under my git user, with no AI co-author line. Pushed the branch (the
+   new hook ran the tests in the VM first), opened a pull request into main with gh, and was
+   asked to merge it with a merge commit once its CI run passed.
+
+
 What I took as-is, and what I changed
 -------------------------------------
-Taken as-is: .github/workflows/tests.yml and this file, as produced above.
+Taken as-is: .github/workflows/tests.yml, githooks/pre-push, the README changes and this file,
+as produced above.
 
 Decisions the AI made, which I kept: the workflow runs on a push to any branch (so
 ci-integration is tested before the pull request exists) as well as on pull requests into
 main; the versions are pinned to the ones in the README and on my VM (ubuntu-24.04, Python 3.12,
 llvmlite 0.49.*, LLVM 18 from apt); one extra step checks the native binary with
-full_compiler.sh.
+full_compiler.sh. For the hook: it lives in githooks/ and is turned on with core.hooksPath;
+on a machine without lli it falls back to the VM; it shows only failures and the summary.
 
-Changed by me: the push and the pull request. I made no hand edits to the generated
-files; if I change something later, it goes here.
+Changed by me: nothing. I made no hand edits to the generated files; if I change something
+later, it goes here.
 
 Checked by the AI and shown to me: the test runner and the full_compiler.sh step on a fresh clone
-on the VM, and that the YAML parses.
+on the VM, and that the YAML parses; both GitHub runs of #7 before the merge; the pre-push hook
+with passing tests and with a failing one.
 
 Checked by me:
