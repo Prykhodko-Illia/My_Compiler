@@ -49,6 +49,16 @@ x in the body -- indices [0] on this -- is the same gep as p.x on a variable. A 
 passes the address of its object: the variable's alloca, or a gep into it for
 c.center.d2(); a member function calling one of its own struct's passes `this` on.
 
+print is printf, the same declaration exit uses, with a format by type: "%d\n" for an
+i32, "%lld\n" for an i64, "%s\n" for a bool (a select between the global strings "true"
+and "false") and for a string literal, whose text goes in as the argument so a % in it
+stays a %. A struct is printed by walking its field table -- printf("Point{"), then for
+every field a gep, a load and a printf with a format like ", y: %d", a struct field the
+same way one level down, then printf("}") -- so a new struct needs no new code here. An
+object that is not in a variable, a call result, is stored into a slot first. Every
+format and text is a global constant, one per distinct text. read() is scanf("%d") into
+a slot in the entry block, then a load of it.
+
 An inner {} -- the {10, 20} of Circle c{{10, 20}, 5} -- is not an object in memory but one
 value of the struct type, built in registers: it starts as undef and each field goes in
 with insertvalue, by index. The outer {} still writes the object's fields with gep and
@@ -63,7 +73,7 @@ registers (opt -passes=mem2reg).
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from .ast_nodes import MemberFnNode, chain
+from .ast_nodes import FieldNode, MemberFnNode, StringNode, VarNode, chain
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
@@ -71,6 +81,8 @@ I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
 LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}     # the structs join it per module
 
 I8_PTR = ir.PointerType(I8)
+
+FORMAT = {"i32": b"%d", "i64": b"%lld"}             # what print uses for each integer type
 
 FN_PREFIX = "fn_"                 # fn main := ... becomes @fn_main, not a second @main
 
@@ -100,6 +112,11 @@ class CodeGen:
             ir.FunctionType(I32, [I8_PTR], var_arg=True),
             name="printf",
         )
+        self.scanf = ir.Function(
+            self.module,
+            ir.FunctionType(I32, [I8_PTR], var_arg=True),
+            name="scanf",
+        )
 
         # An integer is printed as %lld after widening to i64; a bool is printed as %s
         # with one of the two words chosen by a select.
@@ -107,6 +124,7 @@ class CodeGen:
         self.fmt_str = self.global_string("fmt_str", b"Program exit with result %s\n\0")
         self.word_true = self.global_string("word_true", b"true\0")
         self.word_false = self.global_string("word_false", b"false\0")
+        self.texts = {b"true": self.word_true, b"false": self.word_false}  # text -> its global
 
         # Keyed by the DeclNode, not by the name: two variables in different scopes may
         # share a name, and the tree already says which one is meant. Shadowing costs
@@ -120,6 +138,20 @@ class CodeGen:
         variable.initializer = ir.Constant(array, bytearray(text))
         return variable
 
+    def text(self, data):
+        """An i8* to the global constant holding `data` and a NUL: one global per distinct
+        text, however many prints use it."""
+        if data not in self.texts:
+            self.texts[data] = self.global_string(self.module.get_unique_name("str"), data + b"\0")
+        return self.builder.bitcast(self.texts[data], I8_PTR)
+
+    def printf_call(self, fmt, *values):
+        self.builder.call(self.printf, [self.text(fmt), *values])
+
+    def word(self, value):
+        """The word for an i1: a select between the global strings "true" and "false"."""
+        return self.builder.select(value, self.text(b"true"), self.text(b"false"), name="word")
+
     def run(self, program):
         program.accept(self)
         return self.module
@@ -131,14 +163,14 @@ class CodeGen:
         self.builder = ir.IRBuilder(self.entry)
         self.last_slot = None
 
-    def alloca_in_entry(self, decl):
-        """A slot for `decl` at the top of the entry block, then back to where we were."""
+    def alloca_in_entry(self, llvm_type, name):
+        """A slot at the top of the entry block, then back to where we were."""
         here = self.builder.block
         if self.last_slot is None:
             self.builder.position_at_start(self.entry)
         else:
             self.builder.position_after(self.last_slot)          # declaration order
-        self.last_slot = self.builder.alloca(self.types[decl.type_name], name=decl.name)
+        self.last_slot = self.builder.alloca(llvm_type, name=name)
         self.builder.position_at_end(here)
         return self.last_slot
 
@@ -198,7 +230,7 @@ class CodeGen:
         self.begin_function(self.fns[node], node)
         for param, arg in zip(node.params, args):               # a parameter is a copy in a slot
             arg.name = param.name
-            self.slots[param] = self.alloca_in_entry(param)
+            self.slots[param] = self.alloca_in_entry(self.types[param.type_name], param.name)
             self.builder.store(arg, self.slots[param])
         node.body.accept(self)                                   # its last line is an exit: a ret
 
@@ -210,7 +242,7 @@ class CodeGen:
         self.structs[node.name] = node
 
     def visit_decl(self, node):
-        ptr = self.alloca_in_entry(node)
+        ptr = self.alloca_in_entry(self.types[node.type_name], node.name)
         self.slots[node] = ptr
         struct = self.structs.get(node.type_name)
         if struct is None or node.copy:                          # one value: a number or a whole object
@@ -281,15 +313,50 @@ class CodeGen:
             return
         # at the top level: print, and end the program
         if node.value.type == "bool":
-            word = self.builder.select(value,
-                                       self.builder.bitcast(self.word_true, I8_PTR),
-                                       self.builder.bitcast(self.word_false, I8_PTR),
-                                       name="word")
-            self.builder.call(self.printf, [self.builder.bitcast(self.fmt_str, I8_PTR), word])
+            self.builder.call(self.printf, [self.builder.bitcast(self.fmt_str, I8_PTR), self.word(value)])
         else:
             value = self.coerce(value, node.value.type, "i64")
             self.builder.call(self.printf, [self.builder.bitcast(self.fmt_int, I8_PTR), value])
         self.builder.ret(ir.Constant(I32, 0))
+
+    def visit_print(self, node):
+        value = node.value
+        if isinstance(value, StringNode):                        # its text as written: a % stays a %
+            self.printf_call(b"%s\n", self.text(value.text.encode("latin-1")))
+        elif value.type in self.structs:                         # Point{x: 3, y: 4}
+            self.print_struct(self.object_address(value), value.type)
+            self.printf_call(b"\n")
+        else:
+            self.print_scalar(value.accept(self), value.type, b"", b"\n")
+
+    def print_scalar(self, value, type_name, before, after):
+        """An i32, an i64 or a bool between `before` and `after`, in one printf."""
+        if type_name == "bool":
+            self.printf_call(before + b"%s" + after, self.word(value))
+        else:
+            self.printf_call(before + FORMAT[type_name] + after, value)
+
+    def print_struct(self, ptr, type_name):
+        """The object at `ptr`: its type's name, then each field in declaration order."""
+        self.printf_call(type_name.encode() + b"{")
+        for field in self.structs[type_name].fields:
+            before = (b", " if field.index else b"") + field.name.encode() + b": "
+            field_ptr = self.gep(ptr, [field.index], name=field.name)
+            if field.type_name in self.structs:                  # one level down, the same way
+                self.printf_call(before)
+                self.print_struct(field_ptr, field.type_name)
+            else:
+                self.print_scalar(self.builder.load(field_ptr), field.type_name, before, b"")
+        self.printf_call(b"}")
+
+    def object_address(self, value):
+        """Where a struct value lives: a variable or a field chain has a place already; any
+        other value -- a call result -- is stored into a slot of its own first."""
+        if isinstance(value, (VarNode, FieldNode)):
+            return self.address_of(value)
+        slot = self.alloca_in_entry(self.types[value.type], "tmp")
+        self.builder.store(value.accept(self), slot)
+        return slot
 
     # -- expressions: return the value the builder produced -----------------
 
@@ -350,6 +417,11 @@ class CodeGen:
             part_value = self.coerce(part.accept(self), part.type, field.type_name)
             value = self.builder.insert_value(value, part_value, field.index)
         return value
+
+    def visit_read(self, node):
+        slot = self.alloca_in_entry(I32, "input")                # scanf writes here
+        self.builder.call(self.scanf, [self.text(b"%d"), slot])
+        return self.builder.load(slot, name="read")
 
     def visit_bool(self, node):
         return ir.Constant(I1, 1 if node.value else 0)

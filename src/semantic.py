@@ -67,7 +67,9 @@ The type rules:
     its result type, which may be a struct;
   * a call has its function's result type, and takes one argument per parameter, each
     assignable to the parameter's type -- so an i32 may go into an i64 parameter;
-  * a parameter is never mut.
+  * a parameter is never mut;
+  * read() gives an i32; print takes an integer, a bool, a struct object or a string
+    literal, and has no value of its own.
 
 The struct rules:
   * an object takes one value per field, in field order, each one assignable to the
@@ -355,6 +357,9 @@ class SemanticChecker:
         node.value.accept(self)
         self.check_assignable(node.value, node.target_type, node, f"assign to '{target}'")
 
+    def visit_print(self, node):
+        node.value.accept(self)           # anything with a value prints; the literal too
+
     def check_condition(self, node, keyword):
         condition = node.condition.accept(self)
         if condition != "bool":
@@ -474,6 +479,14 @@ class SemanticChecker:
             arg.accept(self)
             self.check_assignable(arg, param.type_name, arg, None,
                                   f"argument '{param.name}' of '{qualified(fn)}' is {param.type_name}, got {arg.type}")
+
+    def visit_read(self, node):
+        node.type = "i32"
+        return node.type
+
+    def visit_string(self, node):
+        node.type = "string"              # only ever the value of a print: the parser sees to it
+        return node.type
 
     def visit_bool(self, node):
         node.type = "bool"

@@ -13,6 +13,7 @@
  *   "if" "else" "while"   keyword tokens
  *   "struct" "fn"         keyword tokens
  *   "true" "false"        keyword tokens: the boolean literals
+ *   "read" "print"        keyword tokens: the built-in functions, so never a name
  *   "{" "}"               block tokens
  *   ":=" "+" "-" "*"      operator tokens
  *   "==" "!="             operator tokens, two bytes each
@@ -24,6 +25,8 @@
  *   ident                 identifier token: letters, digits and _, not starting with a
  *                         digit, and not a keyword -- how it is spelled is the lexer's rule
  *   number                constant token: decimal digits, no sign
+ *   string                string token: '"', any bytes but '"' and a newline, '"' --
+ *                         no escape sequences, and closed on the line it opens on
  *
  *   NL                    the endline token that ends every line
  *
@@ -57,7 +60,7 @@ field_decl::= type [ "mut" ] ident NL
 
 fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
-statement ::= decl | assign | if | while
+statement ::= decl | assign | if | while | print
 
 decl      ::= type [ "mut" ] ident init
 
@@ -83,13 +86,18 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident | field | call | member_call | "!" factor
+factor    ::= number | "true" | "false" | ident | field | call | member_call | read
+            | "!" factor
 
 field     ::= ident "." ident { "." ident }
 
 call      ::= ident "(" [ expr { "," expr } ] ")"
 
 member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
+
+read      ::= "read" "(" ")"
+
+print     ::= "print" "(" ( string | expr ) ")"
 
 (* Precedence and associativity come out of the shape of the last four rules, with no
  * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
@@ -119,6 +127,11 @@ member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
  * part on one token after a name, as before. A member_call ends its chain: nothing may
  * follow its ")". Whether the chain before the last "." is an object and not a type, and
  * whether its struct declares that function, is the semantic pass's question.
+ *
+ * read and print are keywords, not names, so neither can name a variable, a function, a
+ * parameter, a field or a member function. read is a factor with an i32 value; print is
+ * a statement with no value, so it cannot stand where a value is expected. A string
+ * stands only as the argument of print: no other rule names it.
  *
  * init recurses through value, so a {} may hold {}s: Ring g{{{10, 20}, r}, {{10, 20}, 2}}.
  * Whether a value may be a {} at all depends on the type of the field it lands in, which

@@ -1,0 +1,13 @@
+-9
+6000000000
+true
+false
+100% \n as written
+
+Point{x: 3, y: 4}
+Box{corner: Point{x: 3, y: 4}, flag: Flag{on: false, big: 6000000000}}
+Point{x: 3, y: 4}
+Flag{on: false, big: 6000000000}
+Point{x: 0, y: 0}
+Point{x: 5, y: 4}
+Program exit with result 0

@@ -19,6 +19,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
     |   +-- AssignNode   name, links: [Link], value: ExprNode
     |   +-- IfNode       condition: ExprNode, then_block: BlockNode, else_block: BlockNode | None
     |   +-- WhileNode    condition: ExprNode, body: BlockNode
+    |   +-- PrintNode    value: ExprNode     -- print(x): prints x and a newline
     +-- BlockNode        statements: [StmtNode], exit: ExitNode | None
     +-- ExitNode         value: ExprNode
     +-- ExprNode   (abstract)      -- also carries `type`, filled in by the semantic pass
@@ -29,6 +30,8 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
         +-- MemberCallNode  target: VarNode | FieldNode, name, args: [ExprNode] -- c.center.d2()
         +-- InitNode     values: [ExprNode]     -- an inner {} for a struct field: {10, 20}
+        +-- ReadNode                         -- read(): one i32 from the standard input
+        +-- StringNode   text                -- a string literal, only the value of a print
         +-- BoolNode     value (True / False)
         +-- ConstNode    value
 
@@ -301,6 +304,23 @@ class WhileNode(StmtNode):
         return visitor.visit_while(self)
 
 
+class PrintNode(StmtNode):
+    """print(x): the value, then a newline. A statement -- it has no value of its own."""
+
+    def __init__(self, line, col, value):
+        super().__init__(line, col)       # position of the 'print' keyword
+        self.value = value                # ExprNode, or a StringNode
+
+    def label(self):
+        return "Print"
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_print(self)
+
+
 class BlockNode(Node):
     """The lines between '{' and '}'. Not a statement of its own: it only follows an if,
     an else, a while or a function's signature. It may end with an exit, like the program
@@ -459,6 +479,31 @@ class InitNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_init(self)
+
+
+class ReadNode(ExprNode):
+    """read(): one integer from the standard input, an i32."""
+
+    def label(self):
+        return "Read"
+
+    def accept(self, visitor):
+        return visitor.visit_read(self)
+
+
+class StringNode(ExprNode):
+    """A string literal: the bytes between the quotes, one character per byte. It stands
+    only as the argument of a print."""
+
+    def __init__(self, line, col, text):
+        super().__init__(line, col)       # position of the opening '"'
+        self.text = text
+
+    def label(self):
+        return f'String "{self.text}"'
+
+    def accept(self, visitor):
+        return visitor.visit_string(self)
 
 
 class BoolNode(ExprNode):

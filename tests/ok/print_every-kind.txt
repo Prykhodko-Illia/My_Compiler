@@ -1,0 +1,41 @@
+struct Flag
+{
+    bool on
+    i64 big
+}
+struct Point
+{
+    i32 mut x
+    i32 y
+    fn moved := (i32 dx) -> Point
+    {
+        Point q{x + dx, y}
+        exit q
+    }
+}
+struct Box
+{
+    Point corner
+    Flag flag
+}
+fn origin := () -> Point
+{
+    Point o{0, 0}
+    exit o
+}
+Point p{3, 4}
+Box b{p, {false, 6000000000}}
+i32 neg{0 - 9}
+print(neg)
+print(6000000000)
+print(true)
+print(neg == 9)
+print("100% \n as written")
+print("")
+print(p)
+print(b)
+print(b.corner)
+print(b.flag)
+print(origin())
+print(p.moved(2))
+exit 0

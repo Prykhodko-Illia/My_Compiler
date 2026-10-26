@@ -6,7 +6,7 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
   field_decl::= type [ "mut" ] ident NL
   fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
-  statement ::= decl | assign | if | while
+  statement ::= decl | assign | if | while | print
   decl      ::= type [ "mut" ] ident init
   init      ::= "{" value { "," value } "}"
   value     ::= expr | init
@@ -19,10 +19,12 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   expr      ::= arith [ ( "==" | "!=" ) arith ]
   arith     ::= term { ( "+" | "-" ) term }
   term      ::= factor { "*" factor }
-  factor    ::= number | "true" | "false" | ident | field | call | member_call | "!" factor
+  factor    ::= number | "true" | "false" | ident | field | call | member_call | read | "!" factor
   field     ::= ident "." ident { "." ident }
   call      ::= ident "(" [ expr { "," expr } ] ")"
   member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
+  print     ::= "print" "(" ( string | expr ) ")"
+  read      ::= "read" "(" ")"
 
 A comparison binds weaker than arithmetic, which is why expr sits above arith: in
 x * 2 != y + 5 each side is a whole arithmetic chain. There is no loop in expr, so at
@@ -50,8 +52,8 @@ no token into the tree.
 
 from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ConstNode,
                         DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, Link, MemberCallNode,
-                        MemberFnNode, MemberNode, NotNode, ParamNode, ProgramNode, StructNode, VarNode,
-                        WhileNode)
+                        MemberFnNode, MemberNode, NotNode, ParamNode, PrintNode, ProgramNode, ReadNode,
+                        StringNode, StructNode, VarNode, WhileNode)
 from .errors import CompileError
 
 
@@ -248,13 +250,17 @@ class Parser:
                 statements.append(self.parse_statement())
 
     def parse_statement(self):
-        """statement ::= decl | assign | if | while"""
+        """statement ::= decl | assign | if | while | print"""
         if self.at("keyword", "branch", "if"):
             return self.parse_if()                             # it reads its own lines
         if self.at("keyword", "loop"):
             return self.parse_while()                          # so does a while
         second = self.peek_second()
-        if self.at("keyword", "typename"):
+        if self.at("keyword", "builtin", "print"):
+            node = self.parse_print()
+        elif self.at("keyword", "builtin", "read") and is_token(second, "separator", "open"):
+            raise self.error("a call alone is not a statement: its value has to go somewhere")
+        elif self.at("keyword", "typename"):
             node = self.parse_decl()
         elif self.at("identifier") and (is_token(second, "identifier") or is_token(second, "keyword", "specifier")):
             node = self.parse_decl()                           # Point p{...}: a struct type
@@ -273,7 +279,7 @@ class Parser:
         elif self.at("block", "end"):
             raise self.error("'}' without a '{'")
         else:
-            raise self.error(f"a statement must start with a type name, 'if', 'while', 'exit' or a variable, found {describe(self.peek())}")
+            raise self.error(f"a statement must start with a type name, 'if', 'while', 'print', 'exit' or a variable, found {describe(self.peek())}")
         self.end_line("the statement")
         return node
 
@@ -329,6 +335,23 @@ class Parser:
             field = self.expect("identifier", None, "a field name after '.'")
             links.append(Link(field.text, field.line, field.col))
         return links
+
+    def parse_print(self):
+        """print ::= "print" "(" ( string | expr ) ")" """
+        keyword = self.eat()
+        self.expect("separator", "open", "'(' after 'print'")
+        if self.at("separator", "close"):
+            raise self.error("print takes one argument: a value or a string literal")
+        token = self.peek()
+        if token is not None and token.kind == "string":       # a literal stands only here
+            self.eat()
+            value = StringNode(token.line, token.col, token.text)
+        else:
+            value = self.parse_expr()
+        if self.at("separator", "comma"):
+            raise self.error("print takes one argument, found a second one after ','")
+        self.expect("separator", "close", "')' after the argument of print")
+        return PrintNode(keyword.line, keyword.col, value)
 
     def parse_if(self):
         """if ::= "if" expr NL block [ "else" NL block ]"""
@@ -402,7 +425,7 @@ class Parser:
         return node
 
     def parse_factor(self):
-        """factor      ::= number | "true" | "false" | ident | field | call | member_call | "!" factor
+        """factor      ::= number | "true" | "false" | ident | field | call | member_call | read | "!" factor
         field       ::= ident "." ident { "." ident }
         call        ::= ident "(" [ expr { "," expr } ] ")"
         member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
@@ -435,6 +458,17 @@ class Parser:
         if self.at("operator", "not"):
             self.eat()
             return NotNode(token.line, token.col, self.parse_factor())
+        if self.at("keyword", "builtin", "read"):              # read() -- no arguments
+            self.eat()
+            self.expect("separator", "open", "'(' after 'read'")
+            if not self.at("separator", "close"):
+                raise self.error("read takes no arguments")
+            self.eat()
+            return self.end_of_chain(ReadNode(token.line, token.col))
+        if self.at("keyword", "builtin", "print"):
+            raise self.error("print has no value: it is a statement")
+        if token is not None and token.kind == "string":
+            raise self.error("a string literal stands only as the argument of print")
         raise self.error(f"expected a constant or a variable, found {describe(token)}")
 
     def parse_call(self, name):

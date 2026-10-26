@@ -1,0 +1,2 @@
+read()
+exit 0
