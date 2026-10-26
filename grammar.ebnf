@@ -63,8 +63,10 @@ fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" typ
 
 statement ::= decl | assign | if | while | print | lambda
 
-lambda    ::= "fn" ident ":=" "[" [ ident { "," ident } ] "]"
+lambda    ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
               "(" [ type ident { "," type ident } ] ")" "->" type NL block
+
+capture   ::= [ "mut" ] ident
 
 decl      ::= type [ "mut" ] ident init
 

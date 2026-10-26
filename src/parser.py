@@ -7,8 +7,9 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   field_decl::= type [ "mut" ] ident NL
   fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
   statement ::= decl | assign | if | while | print | lambda
-  lambda    ::= "fn" ident ":=" "[" [ ident { "," ident } ] "]"
+  lambda    ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
                 "(" [ type ident { "," type ident } ] ")" "->" type NL block
+  capture   ::= [ "mut" ] ident
   decl      ::= type [ "mut" ] ident init
   init      ::= "{" value { "," value } "}"
   value     ::= expr | init
@@ -204,7 +205,7 @@ class Parser:
                                                     (result.line, result.col), body)
 
     def parse_lambda(self):
-        """lambda ::= "fn" ident ":=" "[" [ ident { "," ident } ] "]"
+        """lambda ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
                       "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
         A function with a capture list, standing where a statement does."""
@@ -224,8 +225,12 @@ class Parser:
                           (result.line, result.col), body)
 
     def parse_capture(self):
+        """capture ::= [ "mut" ] ident"""
+        mutable = self.at("keyword", "specifier")
+        if mutable:
+            self.eat()
         name = self.expect("identifier", None, "the name of a variable to capture")
-        return Capture(name.text, name.line, name.col)
+        return Capture(name.text, mutable, name.line, name.col)
 
     def lambda_here(self):
         """Does the current line, at the cursor, start a lambda: fn name := [ ?"""

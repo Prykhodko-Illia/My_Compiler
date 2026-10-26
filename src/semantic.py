@@ -53,8 +53,8 @@ member call it is: the arguments, the mutation rule, and nothing else to generat
 dot the same holds: in s.scale(7), scale is a field of s, so the call is s.scale.call(7).
 
 A lambda is rewritten here too, because only here are the types of its captures known:
-fn add_k := [k](i32 y) -> i32 becomes a struct lambda.add_k with one const field per
-capture, its member function call with the lambda's parameters, result and body, and a
+fn add_k := [k](i32 y) -> i32 becomes a struct lambda.add_k with one field per capture
+(const, or mut for [mut k]), its member function call with the lambda's parameters, result and body, and a
 variable add_k of that struct, initialised where the lambda stands with the captured
 values -- a copy, so changing k later does not change add_k. The struct joins the
 program's lambda_structs; add_k(5) is then the call of an object. The body is checked as
@@ -64,6 +64,13 @@ nothing else. What stood around it is kept on a stack of its own, only to say th
 the body uses is visible outside but not captured. The variable is declared after the
 body, so a lambda cannot call itself. A struct without a name in the language has a type
 no parameter, result, variable or field can have, so a lambda value goes nowhere else.
+
+[mut n] gives the lambda a copy of its own to change: the field is mut, so a call that
+assigns it -- or calls a mutating call on it, a captured lambda among them -- is a
+mutating member function, and the mutation rule decides where it may be called, as for
+any other. The variable of a lambda with a mut capture is mut, so next() works where it
+stands; inside another lambda, [next] is a const copy and [mut next] a mutable one. The
+variable that was captured never changes.
 
 Its contract with the code generator is a handful of fields on the tree:
   * `node.type` on every expression node -- "i32", "i64", "bool" or a struct name;
@@ -125,8 +132,10 @@ The callable object rules:
 The lambda rules:
   * a capture names a variable visible where the lambda stands, once; a parameter does
     not share a name with a capture;
-  * inside the body a capture is const, and a name of the scopes around it that is not
-    captured is an error;
+  * inside the body a capture is const unless written [mut n], and a name of the scopes
+    around it that is not captured is an error;
+  * a lambda with a mut capture is a mut variable; its call is mutating when it changes a
+    capture, and is then called only through mut links;
   * a lambda does not call itself;
   * a lambda is not an argument, the value of exit, a value of a declaration, a side of
     an assignment or the value of a print, and its captures are not visible outside it.
@@ -408,7 +417,8 @@ class SemanticChecker:
             if self.find(capture.name) is None:
                 raise error_at(capture, f"cannot capture '{capture.name}': no variable '{capture.name}' is visible here")
             value = VarNode(capture.line, capture.col, capture.name)            # the copy is taken here
-            field = MemberNode(capture.line, capture.col, capture.name, value.accept(self), False,
+            # [mut n]: a copy the body may change -- of a const variable too, it is a copy.
+            field = MemberNode(capture.line, capture.col, capture.name, value.accept(self), capture.mutable,
                                (capture.line, capture.col))
             field.index = len(fields)
             fields.append(field)
@@ -441,8 +451,10 @@ class SemanticChecker:
         else:                             # inside a member body: marked with the member functions
             self.lambda_methods.append(call)
 
-        # Declared only now: the body could not call the lambda it belongs to.
-        node.decl = DeclNode(node.line, node.col, node.name, struct_name, False, values,
+        # Declared only now: the body could not call the lambda it belongs to. It is mut when
+        # a capture is, so a call that changes that copy works where the lambda stands.
+        mutable = any(capture.mutable for capture in node.captures)
+        node.decl = DeclNode(node.line, node.col, node.name, struct_name, mutable, values,
                              (node.line, node.col), (node.line, node.col))
         self.scopes[-1][node.name] = node.decl
         node.struct = struct

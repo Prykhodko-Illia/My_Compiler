@@ -330,12 +330,17 @@ class PrintNode(StmtNode):
 
 
 class Capture:
-    """One name of a lambda's capture list, where it was written."""
+    """One name of a lambda's capture list, where it was written. [mut n] gives the lambda
+    a copy of its own that its body may change."""
 
-    def __init__(self, name, line, col):
+    def __init__(self, name, mutable, line, col):
         self.name = name
+        self.mutable = mutable
         self.line = line
         self.col = col
+
+    def __str__(self):
+        return f"mut {self.name}" if self.mutable else self.name
 
 
 class LambdaNode(StmtNode):
@@ -359,7 +364,7 @@ class LambdaNode(StmtNode):
     def label(self):
         if self.struct:
             return f"Lambda {self.name} -> {self.result_type}"
-        captures = ", ".join(capture.name for capture in self.captures)
+        captures = ", ".join(str(capture) for capture in self.captures)
         return f"Lambda {self.name} [{captures}] -> {self.result_type}"
 
     def children(self):

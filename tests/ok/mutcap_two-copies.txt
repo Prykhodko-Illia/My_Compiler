@@ -1,0 +1,19 @@
+i32 mut n{5}
+fn up := [mut n]() -> i32
+{
+    n := n + 1
+    exit n
+}
+fn down := [mut n]() -> i32
+{
+    n := n - 1
+    exit n
+}
+print(up())
+print(up())
+print(down())
+print(up())
+print(down())
+n := 100
+print(up())
+exit n
