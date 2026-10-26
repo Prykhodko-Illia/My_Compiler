@@ -2,7 +2,8 @@ AI usage log - Practice 8 (callable objects and lambdas)
 ========================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
-Model:   Claude Opus 5.5 (claude-opus-5-5), one new session (prompts 1-6)
+Model:   Claude Opus 5.5 (claude-opus-5-5), one new session (prompts 1-6); a second, separate
+         session checked the result (prompts 7-8)
 Date:    2026-10-26
 Setup:   The AI edited files in ~/Study/compilers and ran the compiler, the tests and lli on my
          Multipass VM (noble-compilers) with `multipass exec`, where the repository is mounted at
@@ -117,6 +118,44 @@ translation, followed by what the AI did.
    PDF's programs), --ast-checked, NAME.ast-checked in the test runner, the new errors, the new
    nodes and how each phase handles the two features. Replaced the Practice 7 log in this file
    with this one; the Practice 7 log is still in git history (merged into main). Committed both.
+
+
+7. Prompt (review session):
+   [attached w08-practice.pdf]
+   "тепер зроби таку ж перевірку для завдання 8"
+   (Now do the same check for task 8.)
+
+   What the AI did:
+   Read the PDF and checked the four practice-8 commits against it without changing any code.
+   Ran the test runner in the VM (240 passing). Rebuilt the PDF's three programs with a 4-space
+   indent, which the line:column of every PDF error matches, and ran them: the Task 1 output
+   (42, 42, 14, 10, Counter{n: 2}, 12), the Task 2 output (15, 100, 50, 11; also as a native
+   binary) and the mut-captures output (1, 2, 34, 3, 0). Made the PDF's one-change variants of
+   those programs and got every error at the PDF's position (19:11, 19:5, 17:17, 8:26, 13:14,
+   11:11), plus the rest of the list: a lambda in exit, in a declaration, in an assignment and in
+   print, a parameter named like a capture, a lambda calling itself, add_k.k, fn without [ in a
+   block, a capture list on a member function, and every Task 1 error. Ran about 25 edge cases
+   of its own: a capture taken anew on every loop iteration, a struct capture being a copy, a
+   lambda in a lambda, in a member function capturing a field and in if / while, a lambda
+   capturing a lambda, a callable parameter, two mut copies of one variable, the original never
+   changing. Compared --ast (the parse tree, Call add_k) and --ast-checked (the PDF's tree line
+   for line), and read the IR: triple(14) and triple.call(14) as the same call of Scale_call,
+   lambda.add_k as {i32}, lambda.add_k_call with this first, and an alloca, a gep and a store per
+   capture. Mapped every test the PDF lists for Task 3 and the additional task to an existing one,
+   and checked that run_tests.sh compares NAME.ast-checked. Reported every requirement as met;
+   flagged that this file ends with an empty "Checked by me" line and that practice-8 was not
+   pushed and had no pull request. A few of its own test files were wrong (one named as an error
+   but valid by the PDF's rules, one with a stray line); it said so rather than count them as
+   failures of my compiler.
+
+
+8. Prompt (review session):
+   "так, додай перевірку в ai_usage.txt і закоміть"
+   (Yes, add the check to ai_usage.txt and commit.)
+
+   What the AI did:
+   Added entries 7-8 to this file and committed it under my git user with no AI co-author line.
+   It left the "Checked by me" line for me to write.
 
 
 What I took as-is, and what I changed
