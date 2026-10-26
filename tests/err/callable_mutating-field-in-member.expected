@@ -1,0 +1,1 @@
+compilation error: line 15:15: cannot call 'ticks': its 'call' changes it, and it is not mut

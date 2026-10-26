@@ -29,6 +29,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- FieldNode    name, links: [Link]   -- c.center.x: the variable, then each field
         +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
         +-- MemberCallNode  target: ExprNode, name, args: [ExprNode] -- c.center.d2(), p.moved(1).shift(2)
+        |   +-- CallableCallNode  the same with name "call" -- triple(14), s.scale(7); made by the semantic pass
         +-- ResultFieldNode value: ExprNode, links: [Link]  -- a field of a call result: c.grown(3).radius
         +-- InitNode     values: [ExprNode]     -- an inner {} for a struct field: {10, 20}
         +-- ReadNode                         -- read(): one i32 from the standard input
@@ -50,7 +51,8 @@ The semantic pass writes, and the code generator reads -- which is their whole c
   * `type` on every expression node;
   * `decl` on every VarNode, FieldNode and AssignNode (the DeclNode or ParamNode the name
     resolved to -- or, for a field named inside a member function, its ThisParam);
-  * `fn` on every CallNode and MemberCallNode (the FnNode or MemberFnNode it calls);
+  * `fn` on every CallNode and MemberCallNode (the FnNode or MemberFnNode it calls) -- or,
+    for a call of an object, `callable`: the CallableCallNode that stands in its place;
   * `indices` on every VarNode, FieldNode, ResultFieldNode and AssignNode: the field chain as field
     numbers, so c.center.x is [0, 0] -- the generator never looks a field up by name. A
     variable has none; a field x named inside a member function starts from the object,
@@ -422,18 +424,23 @@ class FieldNode(ExprNode):
 
 
 class CallNode(ExprNode):
+    """f(...): a function -- or, when the name is a variable, a callable object. The parser
+    cannot tell the two apart; the semantic pass can, and for an object it puts a
+    CallableCallNode in `callable`, which then stands for this node everywhere after it."""
+
     def __init__(self, line, col, name, args):
         super().__init__(line, col)       # position of the function's name
         self.name = name
         self.args = args                  # [ExprNode]
         self.fn = None                    # FnNode, set by the semantic pass -- a MemberFnNode
                                           # when a member function calls one of its struct's
+        self.callable = None              # CallableCallNode, set by the semantic pass
 
     def label(self):
-        return f"Call {self.name}"
+        return self.callable.label() if self.callable else f"Call {self.name}"
 
     def children(self):
-        return self.args
+        return self.callable.children() if self.callable else self.args
 
     def accept(self, visitor):
         return visitor.visit_call(self)
@@ -450,15 +457,34 @@ class MemberCallNode(ExprNode):
         self.name = name
         self.args = args                  # [ExprNode]
         self.fn = None                    # MemberFnNode, set by the semantic pass
+        self.callable = None              # CallableCallNode when `name` is a field: s.scale(7)
 
     def label(self):
-        return f"MemberCall {self.name}"
+        return self.callable.label() if self.callable else f"MemberCall {self.name}"
 
     def children(self):
-        return [self.target, *self.args]
+        return self.callable.children() if self.callable else [self.target, *self.args]
 
     def accept(self, visitor):
         return visitor.visit_member_call(self)
+
+
+class CallableCallNode(MemberCallNode):
+    """A call of an object: triple(14) is triple.call(14), s.scale(7) is s.scale.call(7).
+    Not written by the parser: the semantic pass makes one in place of the CallNode or
+    MemberCallNode the program wrote, and checks it as the member call it is -- so the
+    arguments and the mutation rule are the ones every member call has, and the code
+    generator emits the same call as for the long form."""
+
+    def __init__(self, line, col, target, args, shown):
+        super().__init__(line, col, target, "call", args)
+        self.shown = shown                # the object as written -- triple, s.scale -- for messages
+
+    def label(self):
+        return f"CallableCall {self.shown}"
+
+    def children(self):
+        return self.args
 
 
 class ResultFieldNode(ExprNode):

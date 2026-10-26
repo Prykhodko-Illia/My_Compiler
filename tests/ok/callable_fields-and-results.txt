@@ -1,0 +1,33 @@
+struct Counter
+{
+    i32 mut n
+    fn call := (i64 step) -> i64
+    {
+        n := n + 1
+        i64 r{step * n}
+        exit r
+    }
+}
+struct Clock
+{
+    Counter mut ticks
+    i32 base
+    fn tick := () -> i64
+    {
+        i64 t{ticks(base)}
+        exit t
+    }
+}
+fn fresh := (i32 base) -> Clock
+{
+    Clock c{{0}, base}
+    exit c
+}
+Clock mut clock{{0}, 10}
+print(clock.tick())
+print(clock.tick())
+print(clock.ticks(1))
+print(clock)
+print(fresh(7).ticks(3))
+print(fresh(7).tick())
+exit clock.ticks.n

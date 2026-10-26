@@ -49,6 +49,10 @@ x in the body -- indices [0] on this -- is the same gep as p.x on a variable. A 
 passes the address of its object: the variable's alloca, or a gep into it for
 c.center.d2(); a member function calling one of its own struct's passes `this` on.
 
+A call of an object -- triple(14), s.scale(7) -- has nothing of its own here: the semantic
+pass put a member call of call in its place, and that is what is emitted, so the IR of
+triple(14) and of triple.call(14) is the same line.
+
 A call result is a value in registers, not an object in memory. A field of it is
 extractvalue by the same field numbers a gep would take: c.grown(3).radius. A member
 function needs an address, so a result it is called on -- p.moved(1).shift(2) -- is
@@ -402,12 +406,16 @@ class CodeGen:
         return ptr
 
     def visit_call(self, node):
+        if node.callable:                                        # triple(14): triple.call(14)
+            return node.callable.accept(self)
         this = []
         if isinstance(node.fn, MemberFnNode):                    # d2() in Point: on the same object
             this = [self.slots[self.current_fn.this]]
         return self.builder.call(self.fns[node.fn], [*this, *self.args(node)], name=node.name)
 
     def visit_member_call(self, node):
+        if node.callable:                                        # s.scale(7): s.scale.call(7)
+            return node.callable.accept(self)
         this = self.object_address(node.target)                  # the object, by address
         return self.builder.call(self.fns[node.fn], [this, *self.args(node)], name=node.name)
 

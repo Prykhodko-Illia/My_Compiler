@@ -42,6 +42,16 @@ statements come after, so their member calls are checked on the spot. A mutating
 function is called only through a chain whose every link is mut: the variable and each
 field on the way.
 
+An object whose struct declares a member function named call can be called like a
+function: triple(14) is triple.call(14). The parser cannot tell a variable from a function,
+so it writes a CallNode either way; the decision is made here, by the names in scope. A
+name that is a visible variable -- a local, a parameter, a field inside a member function
+-- is an object to call; otherwise it is a function, looked up as before; a name that is
+both is refused at the call. For an object the pass puts a CallableCallNode -- the target,
+the member function call, the same arguments -- in place of the call, and checks it as the
+member call it is: the arguments, the mutation rule, and nothing else to generate. After a
+dot the same holds: in s.scale(7), scale is a field of s, so the call is s.scale.call(7).
+
 Its contract with the code generator is a handful of fields on the tree:
   * `node.type` on every expression node -- "i32", "i64", "bool" or a struct name;
   * `node.decl` on every VarNode, FieldNode and AssignNode -- the declaration the name
@@ -49,7 +59,8 @@ Its contract with the code generator is a handful of fields on the tree:
   * `node.indices` on every VarNode, FieldNode and AssignNode -- the field chain as field
     numbers;
   * `node.target_type` on every AssignNode, `node.copy` on every DeclNode;
-  * `node.fn` on every CallNode and MemberCallNode -- the function it calls;
+  * `node.fn` on every CallNode and MemberCallNode -- the function it calls -- or
+    `node.callable` when it calls an object: the CallableCallNode to emit instead;
   * `node.struct` and `node.this` on every MemberFnNode.
 The generator reads those and looks nothing up -- not a variable by its name, not a
 field by its name. With shadowing that matters: three x in three scopes are three
@@ -89,10 +100,18 @@ The member function rules:
   * a mutating one is called only through a chain of mut links;
   * a call result is a temporary copy: a field of it may be read when it is a struct, and
     any member function may be called on it, a mutating one too.
+
+The callable object rules:
+  * name(args) on a variable needs a struct that declares call -- not a struct without
+    one, not an integer or a bool -- and is name.call(args);
+  * obj.name(args) where name is a field of obj is obj.name.call(args);
+  * a name that is both a visible variable and a function cannot be called;
+  * a wrong argument, or a mutating call through a const link, is reported for the object,
+    not for its call.
 """
 
-from .ast_nodes import (CallNode, ConstNode, DeclNode, FieldNode, InitNode, Link, MemberCallNode, MemberFnNode,
-                        MemberNode, ParamNode, ReadNode, ResultFieldNode, ThisParam, VarNode, chain)
+from .ast_nodes import (CallableCallNode, CallNode, ConstNode, DeclNode, FieldNode, InitNode, Link, MemberCallNode,
+                        MemberFnNode, MemberNode, ParamNode, ReadNode, ResultFieldNode, ThisParam, VarNode, chain)
 from .errors import CompileError, error_at
 
 I32_MAX = 2**31 - 1
@@ -427,33 +446,68 @@ class SemanticChecker:
         return node.type
 
     def visit_call(self, node):
+        """name(...): a visible variable makes it a call of that object, name.call(...);
+        otherwise a member function of the same struct, then a global function. A name that
+        is both a variable and a function is refused here -- declaring both is not."""
         current = self.current_fn
         method = named(current.struct.methods, node.name) if isinstance(current, MemberFnNode) else None
+        fn = method or self.fns.get(node.name)
+        if self.find(node.name) is not None:
+            if fn is not None:
+                raise error_at(node, f"'{node.name}' is both a variable and a function: rename one of them")
+            target = VarNode(node.line, node.col, node.name)
+            return self.call_object(node, target, node.name)
+        if fn is None:
+            raise error_at(node, f"function '{node.name}' is not declared")
         if method is not None:            # d2() inside Point: d2 on the same object
             current.calls_on_self.append(method)
-            fn = method
-        else:
-            fn = self.fns.get(node.name)
-            if fn is None:
-                raise error_at(node, f"function '{node.name}' is not declared")
         self.check_args(node, fn)
         node.fn = fn
         node.type = fn.result_type
         return node.type
 
+    def call_object(self, node, target, shown):
+        """Put target.call(args) in place of `node` and check it as the member call it is."""
+        node.callable = CallableCallNode(node.line, node.col, target, node.args, shown)
+        node.type = self.visit_member_call(node.callable)
+        return node.type
+
+    def call_field(self, node, field):
+        """obj.name(...) where name is a field of obj: obj.name.call(...). The object has been
+        checked already, so the new target is typed here rather than walked again -- a call
+        result in it must not be checked twice."""
+        target, link = node.target, Link(node.name, node.line, node.col)
+        if isinstance(target, (VarNode, FieldNode)):
+            target = FieldNode(target.line, target.col, target.name, [*getattr(target, "links", []), link])
+        else:                             # a field of a call result: p.moved(1).scale(3)
+            value, links, indices = target, [link], [field.index]
+            if isinstance(target, ResultFieldNode):               # c.grown(1).shape.scale(3)
+                value, links, indices = target.value, [*target.links, link], [*target.indices, field.index]
+            target = ResultFieldNode(node.line, node.col, value, links)
+            target.indices, target.type = indices, field.type_name
+        return self.call_object(node, target, written(target))
+
     def visit_member_call(self, node):
         target = node.target
+        callable_call = isinstance(node, CallableCallNode)
         named_object = isinstance(target, (VarNode, FieldNode))   # else a call result, or a field of one
         if named_object and self.find(target.name) is None and target.name in self.structs:
             raise error_at(target, f"'{node.name}' is called on the type '{target.name}': "
                                    f"a member function is called on an object")
-        type_name = target.accept(self)
+        type_name = target.type or target.accept(self)            # typed already: see call_field
         struct = self.structs.get(type_name)
         if struct is None:
+            if callable_call:
+                raise error_at(node, f"'{node.shown}' is not callable: it is {type_name}")
             raise error_at(node, f"'{written(target)}' is {type_name}, not a struct: "
                                  f"it has no member function '{node.name}'")
         fn = named(struct.methods, node.name)
         if fn is None:
+            if callable_call:
+                raise error_at(node, f"'{node.shown}' is not callable: {type_name} has no member function 'call'")
+            field = named(struct.fields, node.name)
+            if field is not None:         # s.scale(7): a field, so an object to call
+                return self.call_field(node, field)
             raise error_at(node, f"struct '{struct.name}' has no member function '{node.name}'")
         self.check_args(node, fn)
         if named_object and isinstance(target.decl, ThisParam):   # on its own object, or a field of it
@@ -471,6 +525,9 @@ class SemanticChecker:
         result is a temporary copy, not a link: changing it changes nobody's object."""
         target = node.target
         if node.fn.mutating and isinstance(target, (VarNode, FieldNode)) and target.const_link:
+            if isinstance(node, CallableCallNode):
+                why = "it is not mut" if target.const_link == node.shown else f"'{target.const_link}' is not mut"
+                raise error_at(node, f"cannot call '{node.shown}': its 'call' changes it, and {why}")
             raise error_at(node, f"cannot call '{node.name}' on '{written(target)}': "
                                  f"it changes the object, and '{target.const_link}' is not mut")
 
@@ -490,14 +547,16 @@ class SemanticChecker:
         return node.type
 
     def check_args(self, node, fn):
-        """One argument per parameter, each assignable to the parameter's type."""
+        """One argument per parameter, each assignable to the parameter's type. A call of an
+        object names the object, not its 'call'."""
+        name = node.shown if isinstance(node, CallableCallNode) else qualified(fn)
         if len(node.args) != len(fn.params):
-            raise error_at(node, f"function '{qualified(fn)}' takes {plural(len(fn.params), 'argument')}, "
-                                 f"got {len(node.args)}")
+            what = f"'{name}'" if isinstance(node, CallableCallNode) else f"function '{name}'"
+            raise error_at(node, f"{what} takes {plural(len(fn.params), 'argument')}, got {len(node.args)}")
         for param, arg in zip(fn.params, node.args):
             arg.accept(self)
             self.check_assignable(arg, param.type_name, arg, None,
-                                  f"argument '{param.name}' of '{qualified(fn)}' is {param.type_name}, got {arg.type}")
+                                  f"argument '{param.name}' of '{name}' is {param.type_name}, got {arg.type}")
 
     def visit_read(self, node):
         node.type = "i32"
