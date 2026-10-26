@@ -1,220 +1,147 @@
-AI usage log - Practice 7 (member functions, read and print)
-=============================================================
+AI usage log - Practice 8 (callable objects and lambdas)
+========================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
-Model:   Claude Opus 5.5 (claude-opus-5-5), one new session (prompts 1-8); a second, separate
-         session checked the result (prompts 9-11)
+Model:   Claude Opus 5.5 (claude-opus-5-5), one new session (prompts 1-6)
 Date:    2026-10-26
 Setup:   The AI edited files in ~/Study/compilers and ran the compiler, the tests and lli on my
          Multipass VM (noble-compilers) with `multipass exec`, where the repository is mounted at
-         ~/compilers. On my request it created the practice-7 branch from main and made the
-         commits (one per task, under my git user, with no AI co-author line); pushing the branch
-         and opening the pull request are mine.
+         ~/compilers. On my request it created the practice-8 branch from main; it made the
+         commits on its own, one per task, under my git user, with no AI co-author line. Pushing
+         the branch and opening the pull request are mine.
 
-Below is every prompt I sent about Practice 7, quoted as written (in Ukrainian), with an English
+Below is every prompt I sent about Practice 8, quoted as written (in Ukrainian), with an English
 translation, followed by what the AI did.
 
 
 1. Prompt:
-   [attached w07-practice.pdf]
-   "Привіт, тепер перейдемо до завдання 7
-
-   Поясни мені, що тут потрібно зробити для цього завдання"
-   (Hi, now let's move on to task 7. Explain to me what has to be done for this task.)
+   [attached w08-practice.pdf]
+   "Привіт давай перейдемо тепер до практики номер 8, поясни мені, що тут потрібно зробити і
+   потім перейдемо до плану"
+   (Hi, let's move on to practice number 8 now, explain to me what has to be done here, and then
+   we'll move on to the plan.)
 
    What the AI did:
-   Read the PDF and the structure of the repository, and wrote no code. Explained the four tasks
-   and the additional one: member functions declared after the fields and called on an object,
-   name lookup inside them, the object passed by address as a hidden first parameter, the
-   mutation rule with its fixpoint, read() and print with a format per type and struct printing
-   by walking the field table, the tests with NAME.in files, and a call in the middle of a chain.
-   Pointed out what already exists (printf for exit, the fn_ prefix that keeps Point_shift apart
-   from the program's functions) and listed what has to be shown at the defence.
+   Its PDF reader could not render the file (pdftoppm is not installed on my Mac), so it took the
+   text out with a short Swift script using PDFKit, in its scratch folder, and put the examples
+   back together from the two-column layout. Looked at the structure of the repository and wrote
+   no code. Explained the three tasks and the additional one: an object with a member function
+   call is callable, the call rule (a visible variable, then a function, an error for both), the
+   rewrite into a member call in the semantic pass, lambdas with copies of their captures, what a
+   lambda body may see, the rewrite into a struct lambda.NAME, its member function call and a
+   variable, the new --ast-checked flag, the errors with their positions, the tests, and mut
+   captures. Listed what has to be shown at the defence.
 
 
 2. Prompt:
-   "Спершу розпиши детальний план змін по файлах для всіх задач, без коду."
-   (First write a detailed plan of the changes, file by file, for all tasks, without code.)
+   "Так, давай складемо план реалізації Практики 8"
+   (Yes, let's make the implementation plan for Practice 8.)
 
    What the AI did:
-   Read every source file and wrote the plan: what changes in lexer.py, ast_nodes.py, parser.py,
-   semantic.py, codegen.py, run_tests.sh, the tests, grammar.ebnf and README.md, the order of the
-   commits, and the test names. Recommended the "new nodes all the way" way of the PDF over the
-   rewrite after parsing, and making `this` a pointer that goes straight into the slot table, so a
-   field in a member function is the same gep as p.x on a variable. Asked whether to rename the
-   FieldDecl lines of --ast to Member, as in the PDF, since that touches 13 existing .ast files.
+   Read every source file and wrote the plan file by file, with the decisions for the hard
+   spots: a CallNode / MemberCallNode keeps a `callable` field that holds the new
+   CallableCallNode, and --ast-checked and the generator go through it, instead of rewriting
+   every parent of an expression; the struct of each lambda goes into a list of its own on the
+   ProgramNode (program.lambda_structs), so the generator builds it with the program's structs
+   and it is not printed twice; two lambdas with one name in two scopes get distinct struct
+   names; a lambda body is checked as the member function call of its struct, so its captures
+   are the fields of its object, and what stood around it is kept on a stack only to report "not
+   captured". Proposed to keep add_k.call(5) legal, since that is what add_k(5) becomes, and
+   asked me to say if I wanted it to be an error.
 
 
 3. Prompt:
-   "Перейменуй FieldDecl на Member, як у PDF, онови 13 .ast файлів і починай Task 1 на гілці
-   practice-7."
-   (Rename FieldDecl to Member, as in the PDF, update the 13 .ast files and start Task 1 on the
-   practice-7 branch.)
+   "Так, створи гілку practice-8 від main і почни реалізацію з Task 1"
+   (Yes, create the practice-8 branch from main and start the implementation with Task 1.)
 
-   What the AI did (Task 1 - member function declaration and call):
-   Created the practice-7 branch. Renamed the --ast label and, to keep the label and the class
-   name alike, the class too (FieldDeclNode -> MemberNode); updated the 13 .ast files. Tree:
-   StructNode.methods, MemberFnNode, MemberCallNode. Parser: the fields of a struct are read until
-   a line starts with fn or '}', then parse_fn reads the member functions; a member function
-   before the first field is an error at its fn, a field after one is an error at that field; a
-   '(' after a name of a chain makes it a member call; a member call alone on a line is not a
-   statement. Updated grammar.ebnf. Checked that --ast of the PDF's program matches the PDF.
-   Added 5 err programs. 150 tests passing; the PDF's program was the one failure, because the
-   semantic pass did not know member functions yet. Then waited for my go-ahead to commit.
+   What the AI did (Task 1 - callable objects):
+   Created the practice-8 branch. Tree: CallableCallNode (a MemberCallNode with the name call
+   and the object as written, for messages) and the `callable` field. Semantic pass: visit_call
+   follows the rule of the PDF - a visible variable is an object to call, otherwise a member
+   function of the same struct, then a global function; a name that is both is an error at the
+   call; obj.name(args) where name is a field of obj becomes obj.name.call(args), a field of a
+   call result included, without checking the result twice. Messages for an object without call,
+   a call on an i32, the wrong arguments (named after the object) and a mutating call through a
+   const link. Generator: two lines, which emit the member call in place of the call. Checked the
+   PDF's program through lli (42, 42, 14, 10, Counter{n: 2}, 12) and that triple(14) and
+   triple.call(14) give the same call line in output.ll. Added 2 ok and 9 err programs. 211 tests
+   passing. Committed as "Task 1: ...".
 
 
 4. Prompt:
-   "Закоміть Task 1 (не додавай себе як автора) (без tests/ok/member_task1-program, він піде з
-   Task 2) і починай Task 2."
-   (Commit Task 1 (don't add yourself as an author) (without tests/ok/member_task1-program, it
-   goes with Task 2) and start Task 2.)
+   "Так, переходь до Task 2 — лямбди"
+   (Yes, go on to Task 2 - lambdas.)
 
-   What the AI did (Task 2 - names, mutation rule and code generation):
-   Committed Task 1 as "Task 1: ...". Semantic pass: every member function gets a ThisParam; a
-   name in none of the body's frames may be a field of the object and resolves to this with the
-   field's index first in the chain, so a parameter or a local hides a field; f(...) in a member
-   function looks among the struct's member functions first, then among the global ones. The
-   member bodies are checked before the global functions and the statements, each noting whether
-   it writes a field and which member functions it calls on its object or its fields; then the
-   mutating ones are marked by repeating until nothing new is marked (calls may form a cycle), and
-   only then are member calls inside member bodies checked against the rule. New errors: a field
-   and a member function with the same name, two member functions with the same name, an unknown
-   name, an unknown member function, a call on a type or on an i32, a mutating call through a
-   const link. Generator: Point_shift with a pointer to the object as its first parameter, `this`
-   put straight into the slot table, a member call passing an alloca or a gep. Checked the PDF's
-   program (83) and that x := x + dx in Point_shift is a gep, a load, an add and a store. Added
-   the PDF's program and 9 more ok programs, and 16 err programs. 176 tests passing.
+   What the AI did (Task 2 - lambdas):
+   Lexer: '[' and ']' as tokens. Tree: Capture and LambdaNode, which prints itself as written
+   before the semantic pass and as its struct and declaration after it. Parser: a line that
+   starts with fn NAME := [ is a lambda, in any block and right after the functions; a capture
+   list on a member function is an error; parse_fn and parse_lambda share the signature part.
+   Semantic pass: visit_lambda checks the captures (twice, not visible), the parameters (named
+   like a capture), builds the struct lambda.NAME with one const field per capture and its
+   member function call, checks the body as that member function with what stood around it on a
+   stack, and declares the variable only after the body. New errors: a name used without a
+   capture, an assignment to a capture, a lambda calling itself, and a lambda passed as an
+   argument, as the value of exit, in a declaration, in an assignment, in print, or read from
+   outside (add_k.k). visit_fn now restores the function around it, since a lambda body is
+   checked inside another body. Generator: the lambda structs are built with the program's, and
+   a lambda is the declaration of its variable. compiler.py: --ast-checked. run_tests.sh: a
+   NAME.ast-checked file is compared too. Updated grammar.ebnf. Checked the PDF's program through
+   lli (15, 100, 50, 11), its --ast-checked against the PDF, %"lambda.add_k" and
+   @"lambda.add_k_call" in output.ll, and every error of the PDF made from that program with the
+   same line:column as the PDF (19:11, 19:5, 17:17, 8:26, 13:14). Added 6 ok programs (one with
+   its .ast-checked) and 15 err programs. 232 tests passing. Committed as "Task 2: ...".
 
 
 5. Prompt:
-   "Закоміть Task 2 (не додавай себе як автора) і починай Task 3: read() і print."
-   (Commit Task 2 (don't add yourself as an author) and start Task 3: read() and print.)
+   "Так, переходь до додаткового завдання — mut captures"
+   (Yes, go on to the additional task - mut captures.)
 
-   What the AI did (Task 3 - read() and print):
-   Committed Task 2 as "Task 2: ...". Lexer: string literals with no escape sequences, an
-   unclosed one reported at its opening '"'; read and print as keywords, so neither can be a
-   name. Parser: print as a statement with one argument, read() as a factor, a literal only inside
-   print, errors for print(), print(a, b), print as a value and read(5). Generator: scanf declared
-   next to printf, read() as scanf("%d") into an entry-block alloca and a load; print with %d,
-   %lld, %s over a select for a bool, %s with the literal as the argument for a string; a struct
-   printed by walking its field table, recursively for a struct field, a call result stored into
-   an alloca first; every format and text one global constant. run_tests.sh passes NAME.in as the
-   standard input of lli, /dev/null otherwise. Changed the "a statement must start with ..."
-   message to list print, and updated the expected file of the one old test that shows it.
-   Checked the PDF's program with 3 4 on the input. Added 4 ok and 13 err programs. 193 tests
-   passing.
+   What the AI did (additional task - mut captures):
+   Parser: capture ::= [ "mut" ] ident. Semantic pass: the field of a mut capture is mut, and
+   the variable of a lambda is mut when one of its captures is; the rest came from the code that
+   already existed - an assignment to a field marks call as mutating, a call of a mut captured
+   lambda passes it on, and a const copy is refused by the mutation rule of Task 1. Checked the
+   PDF's program (1, 2, 34, 3, 0) and the error of the PDF with [next] at 11:11. Added 5 ok
+   programs (the PDF's, a counter and a fresh copy in a loop, two lambdas with their own copies
+   of one variable, a const and a mut capture in one list, a lambda with a mut capture in a member
+   function) and 3 err programs. 240 tests passing. Committed as "Additional task: mut captures".
 
 
 6. Prompt:
-   "Закоміть Task 3 (не додавай себе як автора) і переходь до Task 4: тести за списком з PDF і
-   README."
-   (Commit Task 3 (don't add yourself as an author) and go on to Task 4: the tests from the PDF's
-   list and the README.)
-
-   What the AI did (Task 4 - tests and README):
-   Committed Task 3 as "Task 3: ...". Mapped each of the 14 tests the PDF lists to a test already
-   added with Tasks 1-3, so none were missing. Rewrote the README: member functions, read and
-   print in the language section, the --ast nodes, NAME.in in the test runner, the new errors and
-   how each phase handles them. 193 tests passing. Committed as "Task 4: ...".
-
-
-7. Prompt:
-   "Починай додаткову задачу: виклик посередині ланцюжка (p.moved(1).shift(2), c.grown(3).radius)."
-   (Start the additional task: a call in the middle of a chain.)
-
-   What the AI did (additional task - a call in the middle of a chain):
-   Parser: a call no longer ends its chain; after its ')' come member calls on the result or on
-   a field of it, then maybe fields of the last result (a new ResultFieldNode); a line that starts
-   with a call is read as a value first, so `p.moved(1).x := 5` is reported as an assignment to a
-   call result. Semantic pass: a '.' after a call whose result is not a struct is an error at that
-   '.'; a result is a temporary copy, not a link, so any member function may be called on it.
-   Generator: a field of a result is extractvalue; a result a member function is called on is
-   stored into a temporary alloca, which becomes `this`. The former test member_dot-after-call
-   became a semantic error at the same position and was renamed extra_dot-after-i32-result.
-   Updated grammar.ebnf and the README. Checked the PDF's program (46). Added 2 ok and 5 more err
-   programs. 200 tests passing.
-
-
-8. Prompt:
-   "Закоміть додаткову задачу (не додавай себе як автора), потім онови ai_usage.txt для
-   Practice 7."
-   (Commit the additional task (don't add yourself as an author), then update ai_usage.txt for
-   Practice 7.)
+   "Так, онови README і ai_usage.txt для Практики 8"
+   (Yes, update README and ai_usage.txt for Practice 8.)
 
    What the AI did:
-   Committed the additional task as "Additional task: ...". Replaced the Practice 6 log in this
-   file with this one. The Practice 6 log is still in git history (commit 3cf2740, merged into
-   main).
-
-
-9. Prompt (review session):
-   "update ai_usage"
-
-   What the AI did:
-   Looked at the state of the repository (git status and log) and was interrupted by my next
-   prompt before it changed anything.
-
-
-10. Prompt (review session):
-   [attached w07-practice.pdf]
-   "Привіт, перевір чи зараз коректно виконані вимоги йього завдання"
-   (Hi, check whether the requirements of this task are now fulfilled correctly.)
-
-   What the AI did:
-   Read the PDF and checked the five practice-7 commits against it without changing any code. Ran
-   the test runner in the VM (200 passing). Ran the PDF's three programs verbatim: 83 for Task 1
-   with the --ast matching the PDF, the Task 3 output with 3 4 on the input (through lli and as a
-   native binary), and 46 for the additional task. Ran every error rule the PDF lists for Tasks
-   1-3 and the additional task, each rejected with a line:column, and about 30 edge cases of its
-   own: a local or a parameter hiding a field, a member function hiding a global one, a mutating
-   cycle, mutating calls through a field, on a parameter and on a temporary result, print in
-   every block and of a struct returned by a call, a program function named Point_shift next to
-   the member one. Read the IR: Point_shift with a pointer as its first parameter and x := x + dx
-   as gep / load / add / store, scanf and printf declared once, formats as global constants, the
-   scanf alloca in the entry block, a struct printed by walking its field table, extractvalue
-   and a temporary alloca as this in the additional task. Mapped the 14 tests the PDF lists to
-   existing ones. Reported every requirement as met; flagged that this file was not committed and
-   ended with an empty "Checked by me" line, and that practice-7 was not pushed and had no pull
-   request. Some of its own test programs were wrong at first (an operation after exit, a
-   function before a struct, a shell variable that was never set); my compiler rejected them
-   correctly, and the AI fixed the programs, not the compiler.
-
-
-11. Prompt (review session):
-   "так, додай перевірку в ai_usage.txt і закоміть"
-   (Yes, add the check to ai_usage.txt and commit.)
-
-   What the AI did:
-   Added entries 9-11 to this file, left my "Checked by me" line as I wrote it, and committed
-   the file under my git user with no AI co-author line.
+   README: callable objects and lambdas in the introduction and the language section (with the
+   PDF's programs), --ast-checked, NAME.ast-checked in the test runner, the new errors, the new
+   nodes and how each phase handles the two features. Replaced the Practice 7 log in this file
+   with this one; the Practice 7 log is still in git history (merged into main). Committed both.
 
 
 What I took as-is, and what I changed
 -------------------------------------
-Taken as-is: the changes to src/lexer.py, src/parser.py, src/ast_nodes.py, src/semantic.py and
-src/codegen.py, run_tests.sh, grammar.ebnf, README.md, and the new tests under tests/ok and
-tests/err, as produced in the five steps above, one commit per step.
+Taken as-is: the changes to src/lexer.py, src/parser.py, src/ast_nodes.py, src/semantic.py,
+src/codegen.py, compiler.py, run_tests.sh, grammar.ebnf, README.md, and the new tests under
+tests/ok and tests/err, as produced in the steps above, one commit per step.
 
-Decisions the AI made where the PDF leaves a choice, which I kept: the "new nodes all the way" way
-(MemberFn and MemberCall stay in the tree); read and print as keywords, so using either as a name
-is a syntax error at that name; the class FieldDeclNode renamed to MemberNode along with its
---ast label; a member function's signature may name any struct of the program, its own included;
-a mutating call on a parameter is an error, since a parameter is never mut; if two member
-functions would get the same IR name (A.b_c and A_b.c are both A_b_c), the later one gets a
-suffix; the error for an assignment to a call result points at its ':='; one temporary alloca per
-call site for a result a member function is called on.
+Decisions the AI made where the PDF leaves a choice, which I kept: the `callable` field instead
+of replacing the node in its parent; add_k.call(5) stays legal; a second lambda with the same name
+in another scope gets the struct lambda.NAME.2; the wording of every error message; a lambda
+inside a member function goes into the same fixpoint as the member functions for the mutation
+rule; a fn without '[' inside a block keeps the error message it had before.
 
-Mistakes the AI made and fixed: several of its own test programs ended with an operation after
-exit (`exit a + b`); my compiler rejected them, correctly, since exit takes a factor, and the AI
-rewrote them with a variable before checking the expected results.
+Mistakes the AI made and fixed: in its first version of the "the capture is const" message, the
+check would also have fired for a const field of a local struct variable in a lambda body; it
+noticed this while writing it and added the condition that the name is a field of the lambda's
+own object, before any test ran.
 
 Changed by me: the push and the pull request. I made no hand edits to the generated code; if I
 change something later, it goes here.
 
-Checked by the AI and shown to me: the test runner after every step (150, 176, 193, 193, 200
-passing, all earlier programs included), the --ast of the Task 1 program against the PDF, 83 and 46
-through lli, Point_shift in output.ll, the output of the Task 3 program with 3 4 on the input, and
-the rejected programs with their line:column.
+Checked by the AI and shown to me: the test runner after every step (211, 232, 240 passing, all
+earlier programs included), the three programs of the PDF through lli, --ast-checked of the Task 2
+program against the PDF, lambda.add_k and lambda.add_k_call in output.ll, and the rejected programs
+with their line:column.
 
 Checked by me:
-Tests were compared and conducted along with AI, Second agent was configured to check the corectness
