@@ -1,0 +1,44 @@
+struct Walker
+{
+    i32 mut steps
+    i32 start
+    fn even := (i32 n) -> bool
+    {
+        if n == 0
+        {
+            exit true
+        }
+        exit odd(n - 1)
+    }
+    fn odd := (i32 n) -> bool
+    {
+        if n == 0
+        {
+            exit false
+        }
+        steps := steps + 1
+        exit even(n - 1)
+    }
+    fn ping := (i32 n) -> i32
+    {
+        if n == 0
+        {
+            exit start
+        }
+        exit pong(n - 1)
+    }
+    fn pong := (i32 n) -> i32
+    {
+        exit ping(n)
+    }
+}
+Walker w{0, 7}
+i32 a{w.ping(5)}
+Walker mut m{0, 0}
+bool e{m.even(6)}
+i32 r{a + m.steps}
+if e
+{
+    exit r
+}
+exit 0

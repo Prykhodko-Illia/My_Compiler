@@ -1,0 +1,13 @@
+struct Point
+{
+    i32 x
+    i32 y
+    fn dot := (i32 a, i64 b) -> i64
+    {
+        i64 r{x * a + y * b}
+        exit r
+    }
+}
+Point p{3, 4}
+i64 r{p.dot(2, 1000000000)}
+exit r

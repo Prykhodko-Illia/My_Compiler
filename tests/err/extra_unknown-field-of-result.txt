@@ -1,0 +1,12 @@
+struct Point
+{
+    i32 x
+    fn moved := (i32 dx) -> Point
+    {
+        Point q{x + dx}
+        exit q
+    }
+}
+Point p{3}
+i32 a{p.moved(1).z}
+exit a

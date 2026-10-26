@@ -13,6 +13,7 @@
  *   "if" "else" "while"   keyword tokens
  *   "struct" "fn"         keyword tokens
  *   "true" "false"        keyword tokens: the boolean literals
+ *   "read" "print"        keyword tokens: the built-in functions, so never a name
  *   "{" "}"               block tokens
  *   ":=" "+" "-" "*"      operator tokens
  *   "==" "!="             operator tokens, two bytes each
@@ -24,16 +25,18 @@
  *   ident                 identifier token: letters, digits and _, not starting with a
  *                         digit, and not a keyword -- how it is spelled is the lexer's rule
  *   number                constant token: decimal digits, no sign
+ *   string                string token: '"', any bytes but '"' and a newline, '"' --
+ *                         no escape sequences, and closed on the line it opens on
  *
  *   NL                    the endline token that ends every line
  *
  * One line per declaration, assignment and exit. An if takes several: the condition
  * line, then "{", every line of the block and "}" each on a line of their own, and the
  * same again after an "else". A while takes the same shape, without the else. A struct
- * is its name line, "{", one line per field and "}"; a function is its signature line
- * and a block. NL is written out wherever a line
- * must end; blank lines carry nothing and are skipped. The lexer does not pair the
- * braces -- this grammar does.
+ * is its name line, "{", one line per field, its member functions and "}"; a function is
+ * its signature line and a block, and so is a member function. NL is written out
+ * wherever a line must end; blank lines carry nothing and are skipped. The lexer does
+ * not pair the braces -- this grammar does.
  *
  * What this grammar deliberately cannot say (those are semantics, checked by the pass in
  * src/semantic.py): that a variable was declared before it is used, that it was declared
@@ -51,13 +54,13 @@
 
 program   ::= { struct } { fn } { statement } exit
 
-struct    ::= "struct" ident NL "{" NL field_decl { field_decl } "}" NL
+struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
 
 field_decl::= type [ "mut" ] ident NL
 
 fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
 
-statement ::= decl | assign | if | while
+statement ::= decl | assign | if | while | print
 
 decl      ::= type [ "mut" ] ident init
 
@@ -83,11 +86,22 @@ arith     ::= term { ( "+" | "-" ) term }
 
 term      ::= factor { "*" factor }
 
-factor    ::= number | "true" | "false" | ident | field | call | "!" factor
+factor    ::= number | "true" | "false" | ident | field | result | "!" factor
+
+result    ::= ( call | member_call | read ) { "." ident { "." ident } "(" [ args ] ")" }
+            [ "." ident { "." ident } ]
+
+args      ::= expr { "," expr }
 
 field     ::= ident "." ident { "." ident }
 
 call      ::= ident "(" [ expr { "," expr } ] ")"
+
+member_call ::= ident { "." ident } "." ident "(" [ expr { "," expr } ] ")"
+
+read      ::= "read" "(" ")"
+
+print     ::= "print" "(" ( string | expr ) ")"
 
 (* Precedence and associativity come out of the shape of the last four rules, with no
  * table anywhere. A comparison binds weaker than arithmetic, so expr sits above arith and
@@ -109,6 +123,27 @@ call      ::= ident "(" [ expr { "," expr } ] ")"
  * block must end with exit, which the rule cannot say (a block's exit is optional), so the
  * parser checks it. fn and struct are not statements, so neither can stand in a block.
  * A call is a factor, not a statement: it can stand only where its value is used.
+ *
+ * Inside a struct the fields come first and the member functions after them: a member
+ * function is declared by the same rule fn as any other. In a chain, after every name
+ * comes "." (the chain goes on), "(" (that name is a member function, called on the
+ * chain before it) or anything else (the chain ends), so field, call and member_call
+ * part on one token after a name, as before. Whether the chain before the last "." is an
+ * object and not a type, and whether its struct declares that function, is the semantic
+ * pass's question.
+ *
+ * A call does not end its chain: result goes on after its ")" into the value it returns
+ * -- member functions called on it or on a field of it, p.moved(1).shift(2) and
+ * c.grown(1).center.d2(), then maybe fields of the last result, c.grown(3).radius.
+ * Whether a result has fields at all is the semantic pass's question too: a "." after a
+ * call that returns an i32 is its error, at that ".". A result is a temporary copy, so a
+ * result never stands to the left of ":=": assign starts with ident { "." ident }, and a
+ * "(" there is an error.
+ *
+ * read and print are keywords, not names, so neither can name a variable, a function, a
+ * parameter, a field or a member function. read is a factor with an i32 value; print is
+ * a statement with no value, so it cannot stand where a value is expected. A string
+ * stands only as the argument of print: no other rule names it.
  *
  * init recurses through value, so a {} may hold {}s: Ring g{{{10, 20}, r}, {{10, 20}, 2}}.
  * Whether a value may be a {} at all depends on the type of the field it lands in, which

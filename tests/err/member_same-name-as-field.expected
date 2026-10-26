@@ -1,0 +1,1 @@
+compilation error: line 4:8: struct 'Point' already has a field 'x': a member function cannot have the same name

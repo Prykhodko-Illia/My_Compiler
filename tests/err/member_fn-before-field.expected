@@ -1,0 +1,1 @@
+compilation error: line 3:5: a member function before the first field of struct 'Point': the fields come first

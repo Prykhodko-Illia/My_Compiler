@@ -1,0 +1,1 @@
+compilation error: line 15:21: cannot call 'shift' on 'center': it changes the object, and 'center' is not mut

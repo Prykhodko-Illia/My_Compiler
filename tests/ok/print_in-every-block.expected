@@ -1,0 +1,6 @@
+then
+else
+2
+shift
+Point{x: 5}
+Program exit with result 5

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Runs every program in tests/ok and tests/err and compares the result with its .expected:
-#   - tests/ok/NAME.txt must compile; the output of lli must match NAME.expected;
+#   - tests/ok/NAME.txt must compile; the whole output of lli -- the lines of print and
+#     the exit line -- must match NAME.expected. A program that reads input keeps it in
+#     NAME.in, which becomes the standard input of lli; without one it reads nothing;
 #   - tests/err/NAME.txt must fail; the error message must match NAME.expected,
 #     and no output file may be written.
 # When a NAME.ast file exists next to a program, the --ast dump must match it too.
@@ -30,7 +32,9 @@ for src in tests/ok/*.txt tests/err/*.txt; do
     rm -f "$tmp/out.ll"
     if python3 compiler.py "$src" "$tmp/out.ll" 2>"$tmp/stderr"; then
         $must_compile || { fail "$name" "it compiled, but it is in tests/err"; continue; }
-        actual=$(lli "$tmp/out.ll" 2>&1)
+        input=/dev/null
+        [ -f "$name.in" ] && input="$name.in"
+        actual=$(lli "$tmp/out.ll" < "$input" 2>&1)
     else
         $must_compile && { fail "$name" "it failed, but it is in tests/ok" "$(cat "$tmp/stderr")"; continue; }
         [ -f "$tmp/out.ll" ] && { fail "$name" "it failed but still wrote an output file"; continue; }

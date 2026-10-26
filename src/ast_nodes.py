@@ -8,15 +8,18 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
 
     Node
     +-- ProgramNode      structs: [StructNode], fns: [FnNode], statements: [StmtNode], exit: ExitNode
-    +-- StructNode       name, fields: [FieldDeclNode]
-    +-- FieldDeclNode    name, type_name, mutable  -- also carries `index`, from the semantic pass
+    +-- StructNode       name, fields: [MemberNode], methods: [MemberFnNode]
+    +-- MemberNode       name, type_name, mutable  -- a field; also carries `index`, from the semantic pass
     +-- FnNode           name, params: [ParamNode], result_type, body: BlockNode
+    |   +-- MemberFnNode   the same, declared inside a struct after its fields
     +-- ParamNode        name, type_name   -- a declaration: never mut, so never assigned
+    +-- ThisParam        type_name         -- the object a member function is called on
     +-- StmtNode   (abstract)
     |   +-- DeclNode     name, type_name, mutable, values: [ExprNode]
     |   +-- AssignNode   name, links: [Link], value: ExprNode
     |   +-- IfNode       condition: ExprNode, then_block: BlockNode, else_block: BlockNode | None
     |   +-- WhileNode    condition: ExprNode, body: BlockNode
+    |   +-- PrintNode    value: ExprNode     -- print(x): prints x and a newline
     +-- BlockNode        statements: [StmtNode], exit: ExitNode | None
     +-- ExitNode         value: ExprNode
     +-- ExprNode   (abstract)      -- also carries `type`, filled in by the semantic pass
@@ -25,7 +28,11 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
         +-- VarNode      name      -- also carries `decl`, filled in by the semantic pass
         +-- FieldNode    name, links: [Link]   -- c.center.x: the variable, then each field
         +-- CallNode     name, args: [ExprNode] -- also carries `fn`, from the semantic pass
+        +-- MemberCallNode  target: ExprNode, name, args: [ExprNode] -- c.center.d2(), p.moved(1).shift(2)
+        +-- ResultFieldNode value: ExprNode, links: [Link]  -- a field of a call result: c.grown(3).radius
         +-- InitNode     values: [ExprNode]     -- an inner {} for a struct field: {10, 20}
+        +-- ReadNode                         -- read(): one i32 from the standard input
+        +-- StringNode   text                -- a string literal, only the value of a print
         +-- BoolNode     value (True / False)
         +-- ConstNode    value
 
@@ -42,10 +49,12 @@ their names are.
 The semantic pass writes, and the code generator reads -- which is their whole contract:
   * `type` on every expression node;
   * `decl` on every VarNode, FieldNode and AssignNode (the DeclNode or ParamNode the name
-    resolved to);
-  * `fn` on every CallNode (the FnNode it calls);
-  * `indices` on every FieldNode and AssignNode: the field chain as field numbers, so
-    c.center.x is [0, 0] -- the generator never looks a field up by name;
+    resolved to -- or, for a field named inside a member function, its ThisParam);
+  * `fn` on every CallNode and MemberCallNode (the FnNode or MemberFnNode it calls);
+  * `indices` on every VarNode, FieldNode, ResultFieldNode and AssignNode: the field chain as field
+    numbers, so c.center.x is [0, 0] -- the generator never looks a field up by name. A
+    variable has none; a field x named inside a member function starts from the object,
+    so it is [0] on its ThisParam;
   * `target_type` on every AssignNode: the type of what is written, the variable's or
     the last field's;
   * `copy` on every DeclNode and InitNode: true when a struct is initialised from one
@@ -125,22 +134,23 @@ class ProgramNode(Node):
 
 
 class StructNode(Node):
-    def __init__(self, line, col, name, fields):
+    def __init__(self, line, col, name, fields, methods):
         super().__init__(line, col)       # position of the name
         self.name = name
-        self.fields = fields              # [FieldDeclNode], at least one, in declaration order
+        self.fields = fields              # [MemberNode], at least one, in declaration order
+        self.methods = methods            # [MemberFnNode], maybe none, after the fields
 
     def label(self):
         return f"Struct {self.name}"
 
     def children(self):
-        return self.fields
+        return [*self.fields, *self.methods]
 
     def accept(self, visitor):
         return visitor.visit_struct(self)
 
 
-class FieldDeclNode(Node):
+class MemberNode(Node):
     def __init__(self, line, col, name, type_name, mutable, type_at):
         super().__init__(line, col)       # position of the name
         self.name = name
@@ -150,7 +160,7 @@ class FieldDeclNode(Node):
         self.index = None                 # its place in the struct, set by the semantic pass
 
     def label(self):
-        return f"FieldDecl {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
+        return f"Member {self.name} {self.type_name} {'mut' if self.mutable else 'const'}"
 
 
 class FnNode(Node):
@@ -172,6 +182,26 @@ class FnNode(Node):
         return visitor.visit_fn(self)
 
 
+class MemberFnNode(FnNode):
+    """A function declared inside a struct. It is called on an object of that struct and
+    sees the object's fields by name; the object itself has no name in the language."""
+
+    def __init__(self, line, col, name, params, result_type, result_at, body):
+        super().__init__(line, col, name, params, result_type, result_at, body)
+        # Set by the semantic pass:
+        self.struct = None                # the StructNode that declares it
+        self.this = None                  # ThisParam: the object it is called on
+        self.assigns_field = False        # its body writes a field of its object
+        self.calls_on_self = []           # [MemberFnNode] it calls on its object or on one of its fields
+        self.mutating = False             # it changes its object, directly or through a call
+
+    def label(self):
+        return f"MemberFn {self.name} -> {self.result_type}"
+
+    def accept(self, visitor):
+        return visitor.visit_member_fn(self)
+
+
 class ParamNode(Node):
     """A parameter. It stands where a DeclNode would for a name: VarNode.decl may be one,
     and the generator keys its slot by it the same way."""
@@ -185,6 +215,20 @@ class ParamNode(Node):
 
     def label(self):
         return f"Param {self.name} {self.type_name}"
+
+
+class ThisParam:
+    """The object a member function is called on: its hidden first parameter, passed by
+    address. The language has no name for it -- a field x in the body means this.x -- so
+    it is not in the tree; the semantic pass makes one per member function, and a field
+    resolves to it as a variable resolves to its DeclNode."""
+
+    def __init__(self, type_name):
+        self.name = "this"
+        self.type_name = type_name        # the struct that declares the function
+        # Writable as far as the function is concerned: whether the object may be changed
+        # is decided where the function is called, by the chain it is called through.
+        self.mutable = True
 
 
 class DeclNode(StmtNode):
@@ -261,6 +305,23 @@ class WhileNode(StmtNode):
         return visitor.visit_while(self)
 
 
+class PrintNode(StmtNode):
+    """print(x): the value, then a newline. A statement -- it has no value of its own."""
+
+    def __init__(self, line, col, value):
+        super().__init__(line, col)       # position of the 'print' keyword
+        self.value = value                # ExprNode, or a StringNode
+
+    def label(self):
+        return "Print"
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_print(self)
+
+
 class BlockNode(Node):
     """The lines between '{' and '}'. Not a statement of its own: it only follows an if,
     an else, a while or a function's signature. It may end with an exit, like the program
@@ -334,6 +395,7 @@ class VarNode(ExprNode):
         super().__init__(line, col)
         self.name = name
         self.decl = None                  # DeclNode, set by the semantic pass
+        self.indices = []                 # [index] when the name is a field of a member function's object
 
     def label(self):
         return f"Var {self.name}"
@@ -364,7 +426,8 @@ class CallNode(ExprNode):
         super().__init__(line, col)       # position of the function's name
         self.name = name
         self.args = args                  # [ExprNode]
-        self.fn = None                    # FnNode, set by the semantic pass
+        self.fn = None                    # FnNode, set by the semantic pass -- a MemberFnNode
+                                          # when a member function calls one of its struct's
 
     def label(self):
         return f"Call {self.name}"
@@ -374,6 +437,48 @@ class CallNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_call(self)
+
+
+class MemberCallNode(ExprNode):
+    """A call of a member function on an object: p.d2(), c.center.d2(). The object is
+    the chain before the last '.', the name after it is the function. The object may be a
+    call result too, or a field of one: p.moved(1).shift(2), c.grown(1).center.d2()."""
+
+    def __init__(self, line, col, target, name, args):
+        super().__init__(line, col)       # position of the member function's name
+        self.target = target              # the object it is called on: VarNode | FieldNode, or a result
+        self.name = name
+        self.args = args                  # [ExprNode]
+        self.fn = None                    # MemberFnNode, set by the semantic pass
+
+    def label(self):
+        return f"MemberCall {self.name}"
+
+    def children(self):
+        return [self.target, *self.args]
+
+    def accept(self, visitor):
+        return visitor.visit_member_call(self)
+
+
+class ResultFieldNode(ExprNode):
+    """A field of a call result: c.grown(3).radius, origin().moved(7).x. The result is a
+    temporary copy, not a variable: it can be read, never written."""
+
+    def __init__(self, line, col, value, links):
+        super().__init__(line, col)       # position of the '.' after the call
+        self.value = value                # ExprNode: the call
+        self.links = links                # [Link], at least one
+        self.indices = []                 # the links as field numbers, set by the semantic pass
+
+    def label(self):
+        return "ResultField " + ".".join(link.name for link in self.links)
+
+    def children(self):
+        return [self.value]
+
+    def accept(self, visitor):
+        return visitor.visit_result_field(self)
 
 
 class InitNode(ExprNode):
@@ -395,6 +500,31 @@ class InitNode(ExprNode):
 
     def accept(self, visitor):
         return visitor.visit_init(self)
+
+
+class ReadNode(ExprNode):
+    """read(): one integer from the standard input, an i32."""
+
+    def label(self):
+        return "Read"
+
+    def accept(self, visitor):
+        return visitor.visit_read(self)
+
+
+class StringNode(ExprNode):
+    """A string literal: the bytes between the quotes, one character per byte. It stands
+    only as the argument of a print."""
+
+    def __init__(self, line, col, text):
+        super().__init__(line, col)       # position of the opening '"'
+        self.text = text
+
+    def label(self):
+        return f'String "{self.text}"'
+
+    def accept(self, visitor):
+        return visitor.visit_string(self)
 
 
 class BoolNode(ExprNode):

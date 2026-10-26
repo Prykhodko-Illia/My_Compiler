@@ -1,0 +1,18 @@
+fn add := (i32 a, i32 b) -> i32
+{
+    i32 r{a + b}
+    exit r
+}
+i32 a{read()}
+i32 b{add(read(), 2)}
+i64 mut sum{0}
+i32 mut n{read()}
+while n != 0
+{
+    sum := sum + read()
+    n := n - 1
+}
+print(a)
+print(b)
+print(sum)
+exit read()

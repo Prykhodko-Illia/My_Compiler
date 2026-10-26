@@ -1,0 +1,33 @@
+struct Point
+{
+    i32 mut x
+    fn shift := (i32 dx) -> i32
+    {
+        print("shift")
+        x := x + dx
+        exit x
+    }
+}
+fn twice := (i32 v) -> i32
+{
+    print(v)
+    i32 r{v * 2}
+    exit r
+}
+Point mut p{1}
+i32 mut i{0}
+while i != 2
+{
+    if i == 0
+    {
+        print("then")
+    }
+    else
+    {
+        print("else")
+    }
+    i := i + 1
+}
+i32 a{p.shift(twice(i))}
+print(p)
+exit a

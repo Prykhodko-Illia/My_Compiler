@@ -1,0 +1,15 @@
+struct Counter
+{
+    i32 mut count
+    i32 step
+    fn tick := () -> i32
+    {
+        count := count + step
+        exit count
+    }
+}
+Counter mut c{0, 5}
+i32 a{c.tick()}
+i32 b{c.tick()}
+i32 r{a + b + c.count}
+exit r

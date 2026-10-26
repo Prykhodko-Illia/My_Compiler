@@ -1,0 +1,4 @@
+Point{x: 1, y: 2}
+5
+Point{x: 6, y: 2}
+Program exit with result 17
