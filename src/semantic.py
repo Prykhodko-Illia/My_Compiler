@@ -25,13 +25,32 @@ Next to it sits the struct table, name -> StructNode, filled in program order: a
 may only have a built-in type or a struct declared above it, so a struct can never
 contain itself, directly or through another one.
 
+A member function is checked like a function, with its struct around it. A name in none
+of its frames may still be a field of the object it is called on: x means this.x, so the
+name resolves to the function's ThisParam with the field's index first in the chain. A
+call f(...) looks among the member functions of the same struct first, then among the
+global ones. Every member signature is collected with the global ones, before any body.
+
+The mutation rule needs every body at once. A member function is mutating when it writes
+a field of its object, or calls a mutating member function on its object or on one of
+its fields -- and member functions may call each other in a cycle. So the member bodies
+are checked first, each noting what it writes and what it calls on itself; then the
+mutating ones are marked: first those that write a field, then, again and again, every
+one that calls a marked one, until a pass marks nothing new. Only then is a member call
+inside a member body checked against the rule; the global functions and the top-level
+statements come after, so their member calls are checked on the spot. A mutating
+function is called only through a chain whose every link is mut: the variable and each
+field on the way.
+
 Its contract with the code generator is a handful of fields on the tree:
   * `node.type` on every expression node -- "i32", "i64", "bool" or a struct name;
   * `node.decl` on every VarNode, FieldNode and AssignNode -- the declaration the name
-    resolved to;
-  * `node.indices` on every FieldNode and AssignNode -- the field chain as field numbers;
+    resolved to, or the ThisParam of a member function for a field of its object;
+  * `node.indices` on every VarNode, FieldNode and AssignNode -- the field chain as field
+    numbers;
   * `node.target_type` on every AssignNode, `node.copy` on every DeclNode;
-  * `node.fn` on every CallNode -- the function it calls.
+  * `node.fn` on every CallNode and MemberCallNode -- the function it calls;
+  * `node.struct` and `node.this` on every MemberFnNode.
 The generator reads those and looks nothing up -- not a variable by its name, not a
 field by its name. With shadowing that matters: three x in three scopes are three
 declarations, and the pass is the one that knows which is meant.
@@ -59,9 +78,17 @@ The struct rules:
     at every depth, is mut: a const field gets its value only when the object is created;
   * a struct field may be given a {} of its own inside the outer one, at any depth, with
     the same rules; a {} where a built-in value belongs is an error at that '{'.
+
+The member function rules:
+  * a field and a member function of one struct do not share a name, nor do two member
+    functions;
+  * a member function is called on an object of a struct that declares it -- never on a
+    type, never on an integer or a bool;
+  * a mutating one is called only through a chain of mut links.
 """
 
-from .ast_nodes import ConstNode, DeclNode, InitNode, ParamNode, chain
+from .ast_nodes import (ConstNode, DeclNode, InitNode, Link, MemberFnNode, MemberNode, ParamNode,
+                        ThisParam, chain)
 from .errors import CompileError, error_at
 
 I32_MAX = 2**31 - 1
@@ -81,19 +108,34 @@ class SemanticChecker:
         self.fns = {}                     # name -> FnNode, every signature before any body
         self.current_fn = None            # the FnNode whose body is being checked, or None
         self.top_level_names = set()      # names the program declares outside any block
+        self.mutation_known = False       # every member function is marked mutating or not
+        self.deferred = []                # member calls in member bodies, checked once it is
 
     def run(self, program):
         program.accept(self)
         return program
 
-    def lookup(self, node, name):
-        """The declaration `name` means here: the innermost frame that has it wins."""
+    def find(self, name):
+        """The declaration `name` means here, or None: the innermost frame that has it wins.
+        In a member function a name in no frame may still be a field of the object -- its
+        MemberNode -- so a parameter or a variable hides a field."""
         for frame in reversed(self.scopes):
             if name in frame:
                 return frame[name]
-        if self.current_fn is not None and name in self.top_level_names:
-            raise error_at(node, f"function '{self.current_fn.name}' cannot see the top-level variable "
+        if isinstance(self.current_fn, MemberFnNode):
+            return named(self.current_fn.struct.fields, name)
+        return None
+
+    def lookup(self, node, name):
+        decl = self.find(name)
+        if decl is not None:
+            return decl
+        fn = self.current_fn
+        if fn is not None and name in self.top_level_names:
+            raise error_at(node, f"function '{qualified(fn)}' cannot see the top-level variable "
                                  f"'{name}': a function sees only its parameters and its own variables")
+        if isinstance(fn, MemberFnNode):
+            raise error_at(node, f"'{name}' is not a parameter, a variable or a field of '{fn.struct.name}'")
         raise error_at(node, f"variable '{name}' is used before its declaration")
 
     def check_type(self, node):
@@ -111,26 +153,34 @@ class SemanticChecker:
                 return field
         raise error_at(link, f"struct '{type_name}' has no field '{link.name}'")
 
-    def walk_chain(self, node, check_mut=False):
-        """Follow node.name.link.link...; store decl and indices on the node and return the
-        type at the end. With check_mut, every link must be mut -- a write."""
+    def walk_chain(self, node, links, check_mut=False):
+        """Follow node.name, then `links`; store decl and indices on the node and return the
+        type at the end. With check_mut, every link must be mut -- a write. Without it, the
+        first link that is not mut is kept in node.const_link, for a mutating call."""
         decl = self.lookup(node, node.name)
-        target, path, type_name = chain(node.name, node.links), node.name, decl.type_name
+        target, path = chain(node.name, links), node.name
+        if isinstance(decl, MemberNode):  # a field of the object: x is this.x
+            links = [Link(node.name, node.line, node.col), *links]
+            decl, path = self.current_fn.this, None
+        type_name = decl.type_name
         if check_mut and isinstance(decl, ParamNode):
             raise error_at(node, f"cannot assign to '{target}': '{node.name}' is a parameter, and parameters cannot be changed")
         if check_mut and not decl.mutable:
-            if not node.links:
+            if not links:
                 raise error_at(node, f"cannot assign to '{target}': it is not mut")
             raise error_at(node, f"cannot assign to '{target}': '{path}' is not mut")
+        const_link = None if decl.mutable else path
         indices = []
-        for link in node.links:
+        for link in links:
             field = self.field_of(type_name, link, path)
-            path += "." + link.name
-            if check_mut and not field.mutable:
-                raise error_at(link, f"cannot assign to '{target}': '{path}' is not mut")
+            path = link.name if path is None else f"{path}.{link.name}"
+            if not field.mutable:
+                if check_mut:
+                    raise error_at(link, f"cannot assign to '{target}': '{path}' is not mut")
+                const_link = const_link or path
             indices.append(field.index)
             type_name = field.type_name
-        node.decl, node.indices = decl, indices
+        node.decl, node.indices, node.const_link = decl, indices, const_link
         return type_name
 
     def const_field(self, type_name):
@@ -161,9 +211,20 @@ class SemanticChecker:
         # The bodies are checked before the statements, so the top-level names are collected
         # first -- only to say why such a name is not visible inside a function.
         self.top_level_names = {s.name for s in node.statements if isinstance(s, DeclNode)}
-        for fn in node.fns:               # first every signature...
+        methods = [method for struct in node.structs for method in struct.methods]
+        for struct in node.structs:       # first every signature...
+            for method in struct.methods:
+                self.check_signature(method)
+                method.struct, method.this = struct, ThisParam(struct.name)
+        for fn in node.fns:
             self.declare_fn(fn)
-        for fn in node.fns:               # ...then every body, which may call any of them
+        for method in methods:            # ...then every body, which may call any of them:
+            method.accept(self)           # the member bodies first, for the mutation rule
+        self.mark_mutating(methods)
+        self.mutation_known = True
+        for call in self.deferred:
+            self.check_mutation(call)
+        for fn in node.fns:
             fn.accept(self)
         for stmt in node.statements:
             stmt.accept(self)
@@ -173,6 +234,10 @@ class SemanticChecker:
         if node.name in self.fns:
             prev = self.fns[node.name]
             raise error_at(node, f"function '{node.name}' is already declared at line {prev.line}:{prev.col}")
+        self.check_signature(node)
+        self.fns[node.name] = node
+
+    def check_signature(self, node):
         names = set()
         for param in node.params:
             if param.name in names:
@@ -181,7 +246,19 @@ class SemanticChecker:
             names.add(param.name)
         if node.result_type not in BUILT_IN and node.result_type not in self.structs:
             raise CompileError(*node.result_at, f"unknown type '{node.result_type}'")
-        self.fns[node.name] = node
+
+    def mark_mutating(self, methods):
+        """Mark the member functions that change their object: those that write a field,
+        then every one that calls a marked one on its object or a field, until no pass
+        marks a new one -- calls may go round in a cycle, so one pass is not enough."""
+        for method in methods:
+            method.mutating = method.assigns_field
+        changed = True
+        while changed:
+            changed = False
+            for method in methods:
+                if not method.mutating and any(callee.mutating for callee in method.calls_on_self):
+                    method.mutating = changed = True
 
     def visit_fn(self, node):
         outer = self.scopes
@@ -193,6 +270,9 @@ class SemanticChecker:
             stmt.accept(self)
         node.body.exit.accept(self)
         self.scopes, self.current_fn = outer, None
+
+    # A member body is checked the same way: the fields of its object come in through find().
+    visit_member_fn = visit_fn
 
     def visit_struct(self, node):
         if node.name in self.structs:
@@ -207,6 +287,14 @@ class SemanticChecker:
             self.check_type(field)
             seen.add(field.name)
             field.index = index
+        methods = set()
+        for method in node.methods:
+            if method.name in seen:
+                raise error_at(method, f"struct '{node.name}' already has a field '{method.name}': "
+                                       f"a member function cannot have the same name")
+            if method.name in methods:
+                raise error_at(method, f"struct '{node.name}' already has a member function '{method.name}'")
+            methods.add(method.name)
         self.structs[node.name] = node    # only now: its own fields could not name it
 
     def visit_decl(self, node):
@@ -258,7 +346,9 @@ class SemanticChecker:
 
     def visit_assign(self, node):
         target = chain(node.name, node.links)
-        node.target_type = self.walk_chain(node, check_mut=True)
+        node.target_type = self.walk_chain(node, node.links, check_mut=True)
+        if isinstance(node.decl, ThisParam):   # a field of the object: the function is mutating
+            self.current_fn.assigns_field = True
         inner = self.const_field(node.target_type)
         if inner:
             raise error_at(node, f"cannot assign to '{target}': its field '{inner}' is not mut")
@@ -295,7 +385,7 @@ class SemanticChecker:
         fn = self.current_fn
         if fn is not None:                # in a function: the result, of the result type
             self.check_assignable(node.value, fn.result_type, node, None,
-                                  f"function '{fn.name}' returns {fn.result_type}, but exit has {value}")
+                                  f"function '{qualified(fn)}' returns {fn.result_type}, but exit has {value}")
         elif value not in BUILT_IN:       # printf has no format for a whole object
             raise error_at(node, f"exit takes an integer or a bool, got {value}")
 
@@ -322,28 +412,68 @@ class SemanticChecker:
         return node.type
 
     def visit_var(self, node):
-        node.decl = self.lookup(node, node.name)
-        node.type = node.decl.type_name
+        node.type = self.walk_chain(node, [])
         return node.type
 
     def visit_field(self, node):
-        node.type = self.walk_chain(node)
+        node.type = self.walk_chain(node, node.links)
         return node.type
 
     def visit_call(self, node):
-        fn = self.fns.get(node.name)
+        current = self.current_fn
+        method = named(current.struct.methods, node.name) if isinstance(current, MemberFnNode) else None
+        if method is not None:            # d2() inside Point: d2 on the same object
+            current.calls_on_self.append(method)
+            fn = method
+        else:
+            fn = self.fns.get(node.name)
+            if fn is None:
+                raise error_at(node, f"function '{node.name}' is not declared")
+        self.check_args(node, fn)
+        node.fn = fn
+        node.type = fn.result_type
+        return node.type
+
+    def visit_member_call(self, node):
+        target = node.target
+        if self.find(target.name) is None and target.name in self.structs:
+            raise error_at(target, f"'{node.name}' is called on the type '{target.name}': "
+                                   f"a member function is called on an object")
+        type_name = target.accept(self)
+        struct = self.structs.get(type_name)
+        if struct is None:
+            raise error_at(node, f"'{written(target)}' is {type_name}, not a struct: "
+                                 f"it has no member function '{node.name}'")
+        fn = named(struct.methods, node.name)
         if fn is None:
-            raise error_at(node, f"function '{node.name}' is not declared")
+            raise error_at(node, f"struct '{struct.name}' has no member function '{node.name}'")
+        self.check_args(node, fn)
+        if isinstance(target.decl, ThisParam):     # on its own object, or on one of its fields
+            self.current_fn.calls_on_self.append(fn)
+        node.fn = fn
+        node.type = fn.result_type
+        if self.mutation_known:
+            self.check_mutation(node)
+        else:                             # in a member body: not every function is marked yet
+            self.deferred.append(node)
+        return node.type
+
+    def check_mutation(self, node):
+        """A mutating member function is called only through a chain of mut links."""
+        target = node.target
+        if node.fn.mutating and target.const_link:
+            raise error_at(node, f"cannot call '{node.name}' on '{written(target)}': "
+                                 f"it changes the object, and '{target.const_link}' is not mut")
+
+    def check_args(self, node, fn):
+        """One argument per parameter, each assignable to the parameter's type."""
         if len(node.args) != len(fn.params):
-            raise error_at(node, f"function '{fn.name}' takes {plural(len(fn.params), 'argument')}, "
+            raise error_at(node, f"function '{qualified(fn)}' takes {plural(len(fn.params), 'argument')}, "
                                  f"got {len(node.args)}")
         for param, arg in zip(fn.params, node.args):
             arg.accept(self)
             self.check_assignable(arg, param.type_name, arg, None,
-                                  f"argument '{param.name}' of '{fn.name}' is {param.type_name}, got {arg.type}")
-        node.fn = fn
-        node.type = fn.result_type
-        return node.type
+                                  f"argument '{param.name}' of '{qualified(fn)}' is {param.type_name}, got {arg.type}")
 
     def visit_bool(self, node):
         node.type = "bool"
@@ -361,6 +491,21 @@ class SemanticChecker:
 
 def plural(count, word):
     return f"{count} {word}" + ("" if count == 1 else "s")
+
+
+def named(nodes, name):
+    """The node of `nodes` -- fields or member functions -- called `name`, or None."""
+    return next((node for node in nodes if node.name == name), None)
+
+
+def written(target):
+    """The object of a member call as the program wrote it: p, c.center."""
+    return chain(target.name, getattr(target, "links", []))
+
+
+def qualified(fn):
+    """A function's name in a message: Point.shift for a member function."""
+    return f"{fn.struct.name}.{fn.name}" if isinstance(fn, MemberFnNode) else fn.name
 
 
 def check(program):

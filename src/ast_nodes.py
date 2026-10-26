@@ -13,6 +13,7 @@ an initialiser and ":=" leave nothing behind (the braces of a block become a Blo
     +-- FnNode           name, params: [ParamNode], result_type, body: BlockNode
     |   +-- MemberFnNode   the same, declared inside a struct after its fields
     +-- ParamNode        name, type_name   -- a declaration: never mut, so never assigned
+    +-- ThisParam        type_name         -- the object a member function is called on
     +-- StmtNode   (abstract)
     |   +-- DeclNode     name, type_name, mutable, values: [ExprNode]
     |   +-- AssignNode   name, links: [Link], value: ExprNode
@@ -44,10 +45,12 @@ their names are.
 The semantic pass writes, and the code generator reads -- which is their whole contract:
   * `type` on every expression node;
   * `decl` on every VarNode, FieldNode and AssignNode (the DeclNode or ParamNode the name
-    resolved to);
-  * `fn` on every CallNode (the FnNode it calls);
-  * `indices` on every FieldNode and AssignNode: the field chain as field numbers, so
-    c.center.x is [0, 0] -- the generator never looks a field up by name;
+    resolved to -- or, for a field named inside a member function, its ThisParam);
+  * `fn` on every CallNode and MemberCallNode (the FnNode or MemberFnNode it calls);
+  * `indices` on every VarNode, FieldNode and AssignNode: the field chain as field
+    numbers, so c.center.x is [0, 0] -- the generator never looks a field up by name. A
+    variable has none; a field x named inside a member function starts from the object,
+    so it is [0] on its ThisParam;
   * `target_type` on every AssignNode: the type of what is written, the variable's or
     the last field's;
   * `copy` on every DeclNode and InitNode: true when a struct is initialised from one
@@ -179,6 +182,15 @@ class MemberFnNode(FnNode):
     """A function declared inside a struct. It is called on an object of that struct and
     sees the object's fields by name; the object itself has no name in the language."""
 
+    def __init__(self, line, col, name, params, result_type, result_at, body):
+        super().__init__(line, col, name, params, result_type, result_at, body)
+        # Set by the semantic pass:
+        self.struct = None                # the StructNode that declares it
+        self.this = None                  # ThisParam: the object it is called on
+        self.assigns_field = False        # its body writes a field of its object
+        self.calls_on_self = []           # [MemberFnNode] it calls on its object or on one of its fields
+        self.mutating = False             # it changes its object, directly or through a call
+
     def label(self):
         return f"MemberFn {self.name} -> {self.result_type}"
 
@@ -199,6 +211,20 @@ class ParamNode(Node):
 
     def label(self):
         return f"Param {self.name} {self.type_name}"
+
+
+class ThisParam:
+    """The object a member function is called on: its hidden first parameter, passed by
+    address. The language has no name for it -- a field x in the body means this.x -- so
+    it is not in the tree; the semantic pass makes one per member function, and a field
+    resolves to it as a variable resolves to its DeclNode."""
+
+    def __init__(self, type_name):
+        self.name = "this"
+        self.type_name = type_name        # the struct that declares the function
+        # Writable as far as the function is concerned: whether the object may be changed
+        # is decided where the function is called, by the chain it is called through.
+        self.mutable = True
 
 
 class DeclNode(StmtNode):
@@ -348,6 +374,7 @@ class VarNode(ExprNode):
         super().__init__(line, col)
         self.name = name
         self.decl = None                  # DeclNode, set by the semantic pass
+        self.indices = []                 # [index] when the name is a field of a member function's object
 
     def label(self):
         return f"Var {self.name}"
@@ -378,7 +405,8 @@ class CallNode(ExprNode):
         super().__init__(line, col)       # position of the function's name
         self.name = name
         self.args = args                  # [ExprNode]
-        self.fn = None                    # FnNode, set by the semantic pass
+        self.fn = None                    # FnNode, set by the semantic pass -- a MemberFnNode
+                                          # when a member function calls one of its struct's
 
     def label(self):
         return f"Call {self.name}"
@@ -400,6 +428,7 @@ class MemberCallNode(ExprNode):
         self.target = target              # VarNode | FieldNode: the object it is called on
         self.name = name
         self.args = args                  # [ExprNode]
+        self.fn = None                    # MemberFnNode, set by the semantic pass
 
     def label(self):
         return f"MemberCall {self.name}"

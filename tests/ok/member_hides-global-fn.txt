@@ -1,0 +1,22 @@
+struct Point
+{
+    i32 x
+    i32 y
+    fn d2 := () -> i32
+    {
+        i32 r{x * x + y * y}
+        exit r
+    }
+    fn twice := () -> i32
+    {
+        i32 r{d2() + d2()}
+        exit r
+    }
+}
+fn d2 := () -> i32
+{
+    exit 1000
+}
+Point p{3, 4}
+i32 r{p.twice() + d2()}
+exit r

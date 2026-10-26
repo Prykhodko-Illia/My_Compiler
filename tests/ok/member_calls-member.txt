@@ -1,0 +1,30 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+    fn d2 := () -> i32
+    {
+        i32 r{sq(x) + sq(y)}
+        exit r
+    }
+    fn sq := (i32 v) -> i32
+    {
+        i32 r{v * v}
+        exit r
+    }
+    fn grow := () -> i32
+    {
+        i32 old{bump()}
+        exit d2()
+    }
+    fn bump := () -> i32
+    {
+        x := x + 1
+        y := y + 1
+        exit x
+    }
+}
+Point mut p{2, 3}
+i32 a{p.grow()}
+i32 r{a + p.x}
+exit r

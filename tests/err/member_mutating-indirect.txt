@@ -1,0 +1,19 @@
+struct Point
+{
+    i32 mut x
+    fn a := () -> i32
+    {
+        exit b()
+    }
+    fn b := () -> i32
+    {
+        exit c()
+    }
+    fn c := () -> i32
+    {
+        x := x + 1
+        exit x
+    }
+}
+Point p{1}
+exit p.a()

@@ -1,0 +1,10 @@
+struct Point
+{
+    i32 x
+    fn ok := () -> bool
+    {
+        exit x
+    }
+}
+Point p{1}
+exit p.ok()

@@ -1,0 +1,1 @@
+compilation error: line 10:6: 'd2' is called on the type 'Point': a member function is called on an object

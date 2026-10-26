@@ -40,6 +40,15 @@ indices come from the semantic pass; nothing here looks a field up by name. A wh
 object moves as one value -- a load of %"Point" and a store of it -- which is how
 Point q{p} copies and how an object lands in a struct-typed field.
 
+A member function is a function of the module named after its struct and itself,
+Point_shift, whose first parameter is a pointer to the object it is called on -- `this`.
+The object is passed by address, so the function changes the caller's object, not a copy.
+A pointer to an object is exactly what the alloca of a struct variable is, so `this` needs
+no slot of its own: it stands in the slot table for the function's ThisParam, and a field
+x in the body -- indices [0] on this -- is the same gep as p.x on a variable. A call
+passes the address of its object: the variable's alloca, or a gep into it for
+c.center.d2(); a member function calling one of its own struct's passes `this` on.
+
 An inner {} -- the {10, 20} of Circle c{{10, 20}, 5} -- is not an object in memory but one
 value of the struct type, built in registers: it starts as undef and each field goes in
 with insertvalue, by index. The outer {} still writes the object's fields with gep and
@@ -54,7 +63,7 @@ registers (opt -passes=mem2reg).
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from .ast_nodes import chain
+from .ast_nodes import MemberFnNode, chain
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
@@ -73,7 +82,7 @@ class CodeGen:
         # A context of our own: named struct types live in the context, and the global one
         # would keep a %"Point" from an earlier module in the same process.
         self.context = ir.Context()
-        self.module = ir.Module(name="practice6", context=self.context)
+        self.module = ir.Module(name="practice7", context=self.context)
         self.module.triple = llvm.get_default_triple()
         self.types = dict(LLVM_TYPE)      # type name -> LLVM type: built-ins, then each struct
         self.structs = {}                 # struct name -> StructNode, for its fields' types
@@ -84,7 +93,7 @@ class CodeGen:
         self.last_slot = None      # the last alloca in entry: the next one goes after it
         self.current_fn = None     # the FnNode being built, or None for main
 
-        self.fns = {}              # FnNode -> its ir.Function, every one before any body
+        self.fns = {}              # FnNode / MemberFnNode -> its ir.Function, every one before any body
 
         self.printf = ir.Function(
             self.module,
@@ -149,10 +158,19 @@ class CodeGen:
         for struct in node.structs:
             struct.accept(self)
         for fn in node.fns:                                      # every signature first...
-            fn_type = ir.FunctionType(self.types[fn.result_type],
-                                      [self.types[param.type_name] for param in fn.params])
-            self.fns[fn] = ir.Function(self.module, fn_type, name=FN_PREFIX + fn.name)
-        for fn in node.fns:                                      # ...then the bodies
+            self.fns[fn] = self.declare(fn, [], FN_PREFIX + fn.name)
+        for struct in node.structs:
+            this_type = self.types[struct.name].as_pointer()     # the object, by address
+            for method in struct.methods:
+                # Names may contain '_': A.b_c and A_b.c both make A_b_c, and struct fmt's
+                # int would be the global fmt_int. The first one keeps the name, a later
+                # one gets a suffix -- the program's own functions are declared above.
+                name = self.module.get_unique_name(f"{struct.name}_{method.name}")
+                self.fns[method] = self.declare(method, [this_type], name)
+        for struct in node.structs:                              # ...then the bodies
+            for method in struct.methods:
+                method.accept(self)
+        for fn in node.fns:
             fn.accept(self)
 
         main = ir.Function(self.module, ir.FunctionType(I32, []), name="main")
@@ -161,10 +179,24 @@ class CodeGen:
             stmt.accept(self)
         node.exit.accept(self)
 
+    def declare(self, fn, leading, name):
+        """The ir.Function for `fn`: `leading` parameter types, then one per parameter."""
+        fn_type = ir.FunctionType(self.types[fn.result_type],
+                                  [*leading, *(self.types[param.type_name] for param in fn.params)])
+        return ir.Function(self.module, fn_type, name=name)
+
     def visit_fn(self, node):
-        function = self.fns[node]
-        self.begin_function(function, node)
-        for param, arg in zip(node.params, function.args):      # a parameter is a copy in a slot
+        self.build_body(node, self.fns[node].args)
+
+    def visit_member_fn(self, node):
+        this, *args = self.fns[node].args
+        this.name = "this"
+        self.slots[node.this] = this      # already a pointer to the object: no slot of its own
+        self.build_body(node, args)
+
+    def build_body(self, node, args):
+        self.begin_function(self.fns[node], node)
+        for param, arg in zip(node.params, args):               # a parameter is a copy in a slot
             arg.name = param.name
             self.slots[param] = self.alloca_in_entry(param)
             self.builder.store(arg, self.slots[param])
@@ -282,16 +314,32 @@ class CodeGen:
         return self.builder.not_(node.operand.accept(self), name="not")   # xor i1 %v, true
 
     def visit_var(self, node):
-        return self.builder.load(self.slots[node.decl])
+        return self.builder.load(self.address_of(node))
 
     def visit_field(self, node):
-        ptr = self.gep(self.slots[node.decl], node.indices, name=chain(node.name, node.links))
-        return self.builder.load(ptr)
+        return self.builder.load(self.address_of(node))
+
+    def address_of(self, node):
+        """Where a VarNode or a FieldNode lives: the variable's slot, then a gep along the
+        chain. A field named in a member function is a gep on `this`."""
+        ptr = self.slots[node.decl]
+        if node.indices:
+            ptr = self.gep(ptr, node.indices, name=chain(node.name, getattr(node, "links", [])))
+        return ptr
 
     def visit_call(self, node):
-        args = [self.coerce(arg.accept(self), arg.type, param.type_name)    # an i32 into an i64 parameter
+        this = []
+        if isinstance(node.fn, MemberFnNode):                    # d2() in Point: on the same object
+            this = [self.slots[self.current_fn.this]]
+        return self.builder.call(self.fns[node.fn], [*this, *self.args(node)], name=node.name)
+
+    def visit_member_call(self, node):
+        this = self.address_of(node.target)                      # the object, by address
+        return self.builder.call(self.fns[node.fn], [this, *self.args(node)], name=node.name)
+
+    def args(self, node):
+        return [self.coerce(arg.accept(self), arg.type, param.type_name)    # an i32 into an i64 parameter
                 for param, arg in zip(node.fn.params, node.args)]
-        return self.builder.call(self.fns[node.fn], args, name=node.name)
 
     def visit_init(self, node):
         if node.copy:                                            # {p}: the whole object
