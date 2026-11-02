@@ -139,5 +139,3 @@ change something later, it goes here.
 Checked by the AI and shown to me: the test runner after every step, both ways (240, 240, 250,
 255 passing), both warm-ups against the PDF, the chain's exit 4 and its two define lines, the
 round-by-round trace of the extra task's program, and the weakref measurement.
-
-Checked by me:
