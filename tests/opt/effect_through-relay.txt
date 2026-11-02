@@ -1,0 +1,21 @@
+fn say := (i32 a) -> i32
+{
+    print(a)
+    exit a
+}
+fn relay := (i32 a) -> i32
+{
+    exit say(a)
+}
+fn add := (i32 a, i32 b) -> i32
+{
+    i32 r{a + b}
+    exit r
+}
+fn pass := (i32 a) -> i32
+{
+    exit add(a, 1)
+}
+i32 loud{relay(3)}
+i32 silent{pass(4)}
+exit 0

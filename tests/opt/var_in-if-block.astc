@@ -1,0 +1,21 @@
+Program
+  Decl total i32 mut
+    Const 0
+  Decl i i32 const
+    Const 3
+  If
+    BinOp !=
+      Var i
+      Const 0
+    Block
+      Decl step i32 const
+        Const 2
+      Assign total
+        BinOp +
+          Var total
+          Var step
+    Block
+  Print
+    Var total
+  Exit
+    Var total
