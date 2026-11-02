@@ -1,4 +1,4 @@
-"""Phase 2.5: removing what nobody reads  (--remove-unused)
+"""Phase 2.5: removing what nobody reads or calls  (--remove-unused)
 
 The first pass that drops parts of the program. It runs on the tree the semantic pass has
 accepted and annotated, before the code generator: an invalid program never reaches it,
@@ -28,6 +28,14 @@ A block left empty stays too -- its if still evaluates its condition.
 
 A variable that only feeds itself, k := k + 1 with no other reader, survives: the right
 side reads it. Counting cannot see that the read only serves the write.
+
+Global functions are counted the same way, one level up: every call of one, wherever it
+stands -- in the statements, in another function, in a member function, in a lambda
+body. A function with no calls is removed with its whole body, every declaration and call
+inside it in one cut, and the next round no longer sees those calls: the removed body may
+have held the only call of another function. Member functions and lambdas stay. Two
+functions that call only each other, or one that only calls itself, never reach zero and
+stay too -- the reason reference counting cannot free a cycle.
 """
 
 from .ast_nodes import AssignNode, CallNode, DeclNode, IfNode, LambdaNode, MemberCallNode, ReadNode, WhileNode
@@ -42,10 +50,12 @@ def has_call_or_read(expr):
 
 class UseCounter:
     """One walk over the whole tree: for every DeclNode, the number of reads that resolve
-    to it. Keys are id(decl), so two declarations named x are two keys."""
+    to it, and for every global FnNode, the number of calls of it. Keys are id(node), so
+    two declarations named x are two keys."""
 
     def __init__(self):
         self.reads = {}                   # id(DeclNode) -> count
+        self.calls = {}                   # id(FnNode) -> count, global functions only
 
     def read(self, decl):
         self.reads[id(decl)] = self.reads.get(id(decl), 0) + 1
@@ -66,9 +76,11 @@ class UseCounter:
             method.accept(self)
 
     def visit_fn(self, node):
+        self.calls.setdefault(id(node), 0)
         node.body.accept(self)
 
-    visit_member_fn = visit_fn
+    def visit_member_fn(self, node):      # never removed: not counted, only walked
+        node.body.accept(self)
 
     # -- statements ------------------------------------------------------------
 
@@ -125,6 +137,7 @@ class UseCounter:
         if node.callable:                 # c(5): a read of c, then the arguments
             node.callable.accept(self)
             return
+        self.calls[id(node.fn)] = self.calls.get(id(node.fn), 0) + 1    # a MemberFnNode never reaches zero
         for arg in node.args:
             arg.accept(self)
 
@@ -164,13 +177,16 @@ class UseCounter:
 
 
 class Pruner:
-    """Rebuilds every statement list without the dead declarations and the assignments to
-    them. The lists are rebuilt, never deleted from while they are walked."""
+    """Rebuilds the program's function list without the dead functions, and every
+    statement list without the dead declarations and the assignments to them. The lists
+    are rebuilt, never deleted from while they are walked."""
 
-    def __init__(self, dead):
+    def __init__(self, dead, dead_fns):
         self.dead = dead                  # {id(DeclNode)} with no reads
+        self.dead_fns = dead_fns          # {id(FnNode)} with no calls
 
     def prune(self, program):
+        program.fns = [fn for fn in program.fns if id(fn) not in self.dead_fns]
         for struct in program.structs:
             for method in struct.methods:
                 self.prune_block(method.body)
@@ -201,12 +217,13 @@ class Pruner:
 
 
 def remove_unused(program):
-    """Remove every declaration nobody reads, round after round, until a round removes
-    nothing; return the same tree."""
+    """Remove every declaration nobody reads and every global function nobody calls,
+    round after round, until a round removes nothing; return the same tree."""
     while True:
         counter = UseCounter()
         program.accept(counter)
         dead = {decl for decl, count in counter.reads.items() if count == 0}
-        if not dead:
+        dead_fns = {fn for fn, count in counter.calls.items() if count == 0}
+        if not dead and not dead_fns:
             return program
-        Pruner(dead).prune(program)
+        Pruner(dead, dead_fns).prune(program)
