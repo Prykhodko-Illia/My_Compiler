@@ -644,8 +644,18 @@ an invalid one, and before the code generator, so the generator never knows it r
   so an inner `x` that is read never keeps an outer one alive. A read is any value, condition, argument, `print`,
   `exit`, the start of a field chain, the object of a member call or of a callable call, a capture. An assignment
   is not: `y := 5` and `p.x := 5` on a variable nobody reads go with its declaration.
-- **When in doubt, keep.** A call may print and `read()` reads the input, so a declaration whose value contains
-  either stays, and so does an assignment whose value does — with the declaration it writes.
+- **When in doubt, keep.** `read()` reads the input and some calls are observable, so a declaration whose value
+  contains `read()` or a call of a function **with an effect** stays, and so does an assignment whose value does —
+  with the declaration it writes. Any other call is quiet and goes with the value it sits in.
+- **Which calls have an effect.** A function has one when its body prints or reads; when it's a mutating member
+  function (it changes its object); when it may not return — a `while` in its body, or it calls itself, directly
+  or through others (a program that hangs is observable); and when it calls a function with an effect. That last
+  rule goes round in circles, so the set is a fixpoint: start from the first three, add the callers until nothing
+  changes. A call of an object is the call of its `call`, and a lambda declared in a body is not part of that body:
+  it runs where it is called. So `i32 t{c.bump()}` stays and `Counter{n: 1}` still prints, while
+  `i32 u{c.peek()}` goes. Removals feed each other: `i32 a{square(3)}` and `i32 b{quiet(4)}` go in round 1, which
+  leaves `quiet` without a call (round 2) and then `square` (round 3)
+  ([`tests/opt/effect_pdf-example.txt`](tests/opt/effect_pdf-example.txt)).
 - **Unused functions.** The same walk counts the calls of every global function, wherever they stand. A function
   with none is removed with its whole body, every declaration and call in it, in one cut. Member functions and
   lambdas stay; so do parameters and fields.
@@ -695,8 +705,9 @@ src/
                     ResultFieldNode, InitNode, ReadNode, StringNode, BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types
                     every expression and rejects the rest
-  optimizer.py      --remove-unused: UseCounter counts the reads of every declaration and the calls of every global
-                    function, Pruner removes the ones at zero, again until a round removes nothing
+  optimizer.py      --remove-unused: effectful_functions finds the calls that may be observed, UseCounter counts the
+                    reads of every declaration and the calls of every global function, Pruner removes the ones at
+                    zero, again until a round removes nothing
   codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — functions, named struct types, gep,
                     call, basic blocks, cbranch, sext, icmp, select, extractvalue, printf and scanf
   errors.py         CompileError with line and column

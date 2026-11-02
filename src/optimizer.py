@@ -9,10 +9,21 @@ exit, at the start of a field chain, as the object of a member call or of a call
 object, in a capture list (the lambda's declaration reads it). An assignment to it is not
 a read -- y := 5 on a y nobody reads is as dead as the declaration, and goes with it.
 
-A call may print and read() reads the input, so a value that contains either is kept: a
-declaration with one in its values counts as read by itself, and so does the declaration
-behind an assignment with one in its value -- the assignment then stays, and so must the
-slot it writes.
+read() reads the input and a call may print, so a value that contains read() or a call
+of a function with an effect is kept: a declaration with one in its values counts as read
+by itself, and so does the declaration behind an assignment with one in its value -- the
+assignment then stays, and so must the slot it writes. A function has an effect when
+  * its body prints or reads -- print or read();
+  * it is a mutating member function: it changes the object it is called on;
+  * it may not return: its body has a while, or it calls itself, directly or through
+    other functions -- a call that never returns is observable, the program hangs;
+  * it calls a function that has an effect.
+The last rule goes round when functions call each other, so the set is a fixpoint: the
+first three rules, then every caller of a function in the set, until nothing is added.
+A call of an object is the call of its call. A lambda declared in a body runs only when
+it is called, so its own body is not part of the body around it. Every other call is
+quiet: its value goes with the declaration nobody reads -- and with it, maybe, the only
+call of a function, which the next round then removes.
 
 The reads are counted per declaration, not per name: two x in two scopes are two
 DeclNodes, and the checker already knows which one each name means. A declaration with no
@@ -38,14 +49,84 @@ functions that call only each other, or one that only calls itself, never reach 
 stay too -- the reason reference counting cannot free a cycle.
 """
 
-from .ast_nodes import AssignNode, CallNode, DeclNode, IfNode, LambdaNode, MemberCallNode, ReadNode, WhileNode
+from .ast_nodes import (AssignNode, CallableCallNode, CallNode, DeclNode, IfNode, LambdaNode, MemberCallNode,
+                        PrintNode, ReadNode, WhileNode)
 
 
-def has_call_or_read(expr):
-    """Does evaluating `expr` call a function or read the input -- may it be observed?"""
-    if isinstance(expr, (CallNode, MemberCallNode, ReadNode)):
+class Facts:
+    """What one function body does by itself: prints or reads, loops, and whom it calls."""
+
+    def __init__(self):
+        self.io = False                   # a print or a read()
+        self.loops = False                # a while
+        self.callees = set()              # {id(FnNode | MemberFnNode)}
+
+    def scan(self, node):
+        if isinstance(node, LambdaNode):  # declared here, run where it is called
+            for value in node.decl.values:
+                self.scan(value)
+            return
+        if isinstance(node, (CallNode, MemberCallNode)) and node.callable:
+            self.scan(node.callable)      # c(5) is c.call(5)
+            return
+        if isinstance(node, (PrintNode, ReadNode)):
+            self.io = True
+        elif isinstance(node, WhileNode):
+            self.loops = True
+        elif isinstance(node, (CallNode, MemberCallNode)):
+            self.callees.add(id(node.fn))
+            if isinstance(node, CallableCallNode):
+                self.scan(node.target)    # not among its children: it may hold a call result
+        for child in node.children():
+            self.scan(child)
+
+
+def effectful_functions(program):
+    """{id(fn)} of every function, global, member or lambda call, whose call may be
+    observed -- the fixpoint of the rules above, on the tree as it is now."""
+    structs = [*program.structs, *program.lambda_structs]
+    fns = [*program.fns, *(method for struct in structs for method in struct.methods)]
+    facts = {}
+    for fn in fns:
+        facts[id(fn)] = Facts()
+        facts[id(fn)].scan(fn.body)
+
+    def calls_itself(start):
+        seen, todo = set(), list(facts[start].callees)
+        while todo:
+            fn = todo.pop()
+            if fn == start:
+                return True
+            if fn not in seen:
+                seen.add(fn)
+                todo.extend(facts[fn].callees)
+        return False
+
+    effect = {id(fn) for fn in fns
+              if facts[id(fn)].io or facts[id(fn)].loops or getattr(fn, "mutating", False)
+              or calls_itself(id(fn))}
+    changed = True
+    while changed:                        # add the callers, until a pass adds nothing
+        changed = False
+        for fn in fns:
+            if id(fn) not in effect and facts[id(fn)].callees & effect:
+                effect.add(id(fn))
+                changed = True
+    return effect
+
+
+def has_effect(expr, effect):
+    """Does evaluating `expr` read the input or call a function in `effect`?"""
+    if isinstance(expr, ReadNode):
         return True
-    return any(has_call_or_read(child) for child in expr.children())
+    if isinstance(expr, (CallNode, MemberCallNode)):
+        if expr.callable:
+            return has_effect(expr.callable, effect)
+        if id(expr.fn) in effect:
+            return True
+        if isinstance(expr, CallableCallNode) and has_effect(expr.target, effect):
+            return True
+    return any(has_effect(child, effect) for child in expr.children())
 
 
 class UseCounter:
@@ -53,7 +134,8 @@ class UseCounter:
     to it, and for every global FnNode, the number of calls of it. Keys are id(node), so
     two declarations named x are two keys."""
 
-    def __init__(self):
+    def __init__(self, effect):
+        self.effect = effect              # {id(fn)} whose calls may be observed
         self.reads = {}                   # id(DeclNode) -> count
         self.calls = {}                   # id(FnNode) -> count, global functions only
 
@@ -86,8 +168,8 @@ class UseCounter:
 
     def visit_decl(self, node):
         self.reads.setdefault(id(node), 0)
-        if any(has_call_or_read(value) for value in node.values):
-            self.read(node)               # kept: its value may print or read
+        if any(has_effect(value, self.effect) for value in node.values):
+            self.read(node)               # kept: its value may print, read or hang
         for value in node.values:
             value.accept(self)
 
@@ -99,7 +181,7 @@ class UseCounter:
         node.body.accept(self)
 
     def visit_assign(self, node):
-        if has_call_or_read(node.value):  # the target is not a read, unless the value may print
+        if has_effect(node.value, self.effect):   # the target is not a read, unless the value may print
             self.read(node.decl)
         node.value.accept(self)
 
@@ -228,7 +310,7 @@ def remove_unused(program):
     """Remove every declaration nobody reads and every global function nobody calls,
     round after round, until a round removes nothing; return the same tree."""
     while True:
-        counter = UseCounter()
+        counter = UseCounter(effectful_functions(program))
         program.accept(counter)
         dead = {decl for decl, count in counter.reads.items() if count == 0}
         dead_fns = {fn for fn, count in counter.calls.items() if count == 0}
