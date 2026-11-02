@@ -16,7 +16,7 @@ tree and throws it out if it lies, and only then does one last walk emit LLVM IR
 [llvmlite](https://github.com/numba/llvmlite) builder. The only IR text that ever leaves this place is `str(module)`.
 
 ```
-source bytes ──lexer──► tokens ──parser──► AST ──semantic pass──► typed AST ──walk (IRBuilder)──► output.ll ──llc + clang──► program
+source bytes ──lexer──► tokens ──parser──► AST ──semantic pass──► typed AST ──[--remove-unused]──► smaller typed AST ──walk (IRBuilder)──► output.ll ──llc + clang──► program
 ```
 
 Since Practice 5 the language branches and loops: `if` / `else` and `while` with blocks, and `!`. A block of the source is a **scope** in the
@@ -64,6 +64,14 @@ python3 compiler.py input.txt output.ll
 ```
 
 Two arguments: the source to read and the `.ll` file to write. If everything checks out, you get `output.ll` and exit code 0.
+
+Add `--remove-unused` anywhere on the line — first, last or between the paths — and the compiler drops the variables
+nobody reads and the functions nobody calls before it emits anything (see [Optimizations](#️-optimizations)):
+
+```bash
+python3 compiler.py --remove-unused input.txt output.ll
+python3 compiler.py --remove-unused --ast-checked input.txt     # the tree after the pass
+```
 
 Run the IR directly, no linker needed:
 
@@ -215,6 +223,13 @@ Every program lives in one of two folders, and `NAME.expected` next to it holds 
   no output file was left behind.
 - If a `NAME.ast` file sits next to a program, the `--ast` dump must match it as well; a `NAME.ast-checked`
   file does the same for `--ast-checked`.
+- `tests/opt/NAME.txt` must compile, and runs twice: without and with `--remove-unused`. Both outputs must match
+  `NAME.expected` — an optimization never changes what a program prints — and `NAME.astc` is the tree the pass
+  leaves, `--remove-unused --ast-checked`.
+
+Want the whole suite through the pass? `./run_tests.sh --remove-unused` (or `REMOVE_UNUSED=1 ./run_tests.sh`)
+compiles every program of `tests/ok` and `tests/err` with the flag too: every one must print the same and fail
+with the same error. Green both ways, or it isn't an optimization.
 
 New programs are named after the feature they exercise, `feature_variant`: `if-else_nested.txt`,
 `scope_shadow-type.txt`, `not_on-integer.txt`.
@@ -617,10 +632,59 @@ have been typed.
 
 ---
 
+## ✂️ Optimizations
+
+An optimization keeps what a program does — the lines it prints, the input it reads, the exit value — and changes
+how it does it. `--remove-unused` is the first pass that throws parts of the program away
+([`src/optimizer.py`](src/optimizer.py)). It runs after the semantic pass has accepted the program, so it never sees
+an invalid one, and before the code generator, so the generator never knows it ran.
+
+- **Unused variables.** One more walk, `UseCounter`, counts the reads of every declaration — per `DeclNode`, keyed
+  by `id(node)`, through the `decl` link the checker left on every name. Two `x` in two scopes are two counters,
+  so an inner `x` that is read never keeps an outer one alive. A read is any value, condition, argument, `print`,
+  `exit`, the start of a field chain, the object of a member call or of a callable call, a capture. An assignment
+  is not: `y := 5` and `p.x := 5` on a variable nobody reads go with its declaration.
+- **When in doubt, keep.** A call may print and `read()` reads the input, so a declaration whose value contains
+  either stays, and so does an assignment whose value does — with the declaration it writes.
+- **Unused functions.** The same walk counts the calls of every global function, wherever they stand. A function
+  with none is removed with its whole body, every declaration and call in it, in one cut. Member functions and
+  lambdas stay; so do parameters and fields.
+- **Until nothing changes.** `Pruner` rebuilds every statement list without the dead ones, then the pass counts
+  again: a read or a call that lived in something just removed is gone, so something else may be at zero now.
+  `x → y` takes three rounds, `unused → helper → twice` too. Every round that doesn't stop removes something, so it
+  stops.
+
+**The limits of counting.** A variable that only feeds itself — `k := k + 1` with nobody else reading `k` —
+survives: the right side reads it. Two functions that only call each other never reach zero calls, and neither does
+one that only calls itself. Counting can't see a cycle, for the same reason reference counting can't free one
+([`tests/opt/var_self-feeding.txt`](tests/opt/var_self-feeding.txt),
+[`tests/opt/fn_cycle-and-recursion.txt`](tests/opt/fn_cycle-and-recursion.txt)).
+
+**Who frees a removed subtree.** The compiler is Python (CPython 3.12 in the VM), so a node is freed by
+**reference counting** the moment the last pointer to it goes, and a **tracing cycle collector** (`gc`) finds the
+groups that only point at each other. The pass keeps no node itself — its tables hold `id()`s, plain integers — so
+once `Pruner` drops a declaration from its block's list, nothing points at it. The nodes keep **no pointer to their
+parent**: a tree with parent links would be a cycle at every edge (the parent counts the child, the child counts
+the parent), no refcount would ever reach zero, and every removed subtree would wait for `gc`. There is one such
+back link already: a lambda's `call` keeps `.struct`, its struct, which lists it in `.methods`. Measured with
+`weakref.ref` and `gc.disable()`, so only reference counting runs:
+
+```
+tests/opt/var_warmup-chain.txt     Decl y, Decl x       None right after the pass, no gc.collect()
+tests/opt/fn_lambda-in-removed.txt Fn outer, Lambda f   None right after the pass
+                                   Struct lambda.f      still alive -- struct <-> call is a cycle
+                                   after gc.collect()   None (29 unreachable objects collected)
+```
+
+That's the compiler's memory, not the compiled program's: the language has no heap yet, so nothing is freed in the
+binary.
+
+---
+
 ## 🗂️ What's in the repo
 
 ```
-compiler.py         entry point: command-line arguments, --ast, --ast-checked, --tokens, error reporting, writes output.ll
+compiler.py         entry point: command-line arguments, --ast, --ast-checked, --tokens, --remove-unused, error reporting, writes output.ll
 grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
   lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, STRING, COLON, EQ, BANG, MINUS)
@@ -631,12 +695,16 @@ src/
                     ResultFieldNode, InitNode, ReadNode, StringNode, BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types
                     every expression and rejects the rest
+  optimizer.py      --remove-unused: UseCounter counts the reads of every declaration and the calls of every global
+                    function, Pruner removes the ones at zero, again until a round removes nothing
   codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — functions, named struct types, gep,
                     call, basic blocks, cbranch, sext, icmp, select, extractvalue, printf and scanf
   errors.py         CompileError with line and column
 tests/ok/           programs that must compile, with their .expected output (and .ast, .ast-checked and .in files for some)
 tests/err/          programs that must fail, with their .expected error message
-run_tests.sh        runs every test and compares it against its .expected (and .ast, .ast-checked) file
+tests/opt/          programs for --remove-unused: the same .expected with and without it, and the .astc tree it leaves
+run_tests.sh        runs every test and compares it against its .expected (and .ast, .ast-checked, .astc) file;
+                    --remove-unused sends tests/ok and tests/err through the pass too
 full_compiler.sh    compiler.py + llc + clang + run, in one shot
 githooks/pre-push   runs the tests before every git push (on with: git config core.hooksPath githooks)
 .github/workflows/  tests.yml: the GitHub Actions run of the tests
@@ -724,7 +792,12 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
      say "`k` is not captured". The variable is declared after the body, so the lambda can't call itself, and a
      struct with no name in the language has a type nothing can be declared with, so a lambda value goes
      nowhere else. Two lambdas of one name in two scopes get `lambda.helper` and `lambda.helper.2`.
-5. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind. It trusts the tree and checks
+5. **Removing what nobody uses** (`src/optimizer.py`, only with `--remove-unused`): the counting walk and the
+   pruner described in [Optimizations](#️-optimizations), round after round on the checked tree. One catch: a
+   lambda inside a removed function goes with it, but its struct is also on the program's list of lambda structs,
+   which the generator builds from — so the pruner drops the struct of every lambda that is no longer in the tree,
+   or its `call` would still call a function the same round removed.
+6. **The walk that emits** (`src/codegen.py`): `CodeGen`, one method per node kind. It trusts the tree and checks
    nothing.
    - Every `fn` becomes a function of the module, named with a prefix (`@fn_fib`), so a function called `main` or
      `printf` can't clash with the real ones. All of them are declared before any body is built, so a `call` can

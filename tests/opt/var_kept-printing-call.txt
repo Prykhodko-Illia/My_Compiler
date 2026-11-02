@@ -1,0 +1,11 @@
+fn loud := (i32 a) -> i32
+{
+    print(a)
+    exit a
+}
+i32 kept{loud(7)}
+i32 mut assigned{0}
+assigned := loud(8)
+i32 mut dead{0}
+dead := 9
+exit 0

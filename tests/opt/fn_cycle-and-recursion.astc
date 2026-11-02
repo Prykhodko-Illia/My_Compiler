@@ -1,0 +1,37 @@
+Program
+  Fn ping -> i32
+    Param a i32
+    Block
+      Exit
+        Call pong
+          Var a
+  Fn pong -> i32
+    Param a i32
+    Block
+      Exit
+        Call ping
+          Var a
+  Fn fact -> i32
+    Param n i32
+    Block
+      Decl r i32 mut
+        Const 1
+      If
+        BinOp !=
+          Var n
+          Const 0
+        Block
+          Decl rest i32 const
+            Call fact
+              BinOp -
+                Var n
+                Const 1
+          Assign r
+            BinOp *
+              Var n
+              Var rest
+      Exit
+        Var r
+  Exit
+    Call fact
+      Const 5

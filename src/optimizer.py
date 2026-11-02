@@ -179,11 +179,17 @@ class UseCounter:
 class Pruner:
     """Rebuilds the program's function list without the dead functions, and every
     statement list without the dead declarations and the assignments to them. The lists
-    are rebuilt, never deleted from while they are walked."""
+    are rebuilt, never deleted from while they are walked.
+
+    A lambda inside a removed function goes with it, but its struct is also on the
+    program's list of lambda structs, which the generator builds from. So the pruner notes
+    every lambda still in the tree and drops the struct of each one that is not: its call
+    could hold the only call of a function this round removes."""
 
     def __init__(self, dead, dead_fns):
         self.dead = dead                  # {id(DeclNode)} with no reads
         self.dead_fns = dead_fns          # {id(FnNode)} with no calls
+        self.live_lambdas = set()         # {id(StructNode)} of the lambdas still in the tree
 
     def prune(self, program):
         program.fns = [fn for fn in program.fns if id(fn) not in self.dead_fns]
@@ -193,6 +199,7 @@ class Pruner:
         for fn in program.fns:
             self.prune_block(fn.body)
         program.statements = self.prune_statements(program.statements)
+        program.lambda_structs = [struct for struct in program.lambda_structs if id(struct) in self.live_lambdas]
 
     def prune_block(self, block):
         block.statements = self.prune_statements(block.statements)
@@ -211,6 +218,7 @@ class Pruner:
             elif isinstance(stmt, WhileNode):
                 self.prune_block(stmt.body)
             elif isinstance(stmt, LambdaNode):
+                self.live_lambdas.add(id(stmt.struct))
                 self.prune_block(stmt.body)
             kept.append(stmt)
         return kept

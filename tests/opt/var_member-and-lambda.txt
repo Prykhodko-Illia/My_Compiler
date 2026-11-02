@@ -1,0 +1,30 @@
+struct Point
+{
+    i32 mut x
+    i32 mut y
+    fn sum := () -> i32
+    {
+        i32 junk{x}
+        i32 r{x + y}
+        exit r
+    }
+}
+fn from_lambda := (i32 a) -> i32
+{
+    exit a
+}
+Point mut p{1, 2}
+p.x := 5
+Point mut q{3, 4}
+q.y := 6
+i32 k{10}
+i32 notcaptured{11}
+fn add_k := [k](i32 v) -> i32
+{
+    i32 waste{v}
+    i32 r{from_lambda(v) + k}
+    exit r
+}
+print(add_k(1))
+print(p.sum())
+exit 0
