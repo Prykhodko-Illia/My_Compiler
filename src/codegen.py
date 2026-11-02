@@ -49,6 +49,17 @@ x in the body -- indices [0] on this -- is the same gep as p.x on a variable. A 
 passes the address of its object: the variable's alloca, or a gep into it for
 c.center.d2(); a member function calling one of its own struct's passes `this` on.
 
+A call of an object -- triple(14), s.scale(7) -- has nothing of its own here: the semantic
+pass put a member call of call in its place, and that is what is emitted, so the IR of
+triple(14) and of triple.call(14) is the same line.
+
+A lambda has nothing of its own here either. The semantic pass made it a struct -- one
+field per capture, %"lambda.add_k" = type {i32} -- with a member function call, which are
+built like the program's own (@"lambda.add_k_call", the object as its first parameter),
+and a declaration of a variable of that struct where the lambda stands: an alloca, then a
+gep and a store per capture. In a loop the store runs on every pass, so each pass takes
+the values of that moment.
+
 A call result is a value in registers, not an object in memory. A field of it is
 extractvalue by the same field numbers a gep would take: c.grown(3).radius. A member
 function needs an address, so a result it is called on -- p.moved(1).shift(2) -- is
@@ -193,11 +204,14 @@ class CodeGen:
     # -- statements: emit IR, return nothing --------------------------------
 
     def visit_program(self, node):
-        for struct in node.structs:
+        # The struct of each lambda comes after the program's own, in the order the semantic
+        # pass met them: a capture's type is a struct above, or a lambda declared before.
+        structs = [*node.structs, *node.lambda_structs]
+        for struct in structs:
             struct.accept(self)
         for fn in node.fns:                                      # every signature first...
             self.fns[fn] = self.declare(fn, [], FN_PREFIX + fn.name)
-        for struct in node.structs:
+        for struct in structs:
             this_type = self.types[struct.name].as_pointer()     # the object, by address
             for method in struct.methods:
                 # Names may contain '_': A.b_c and A_b.c both make A_b_c, and struct fmt's
@@ -205,7 +219,7 @@ class CodeGen:
                 # one gets a suffix -- the program's own functions are declared above.
                 name = self.module.get_unique_name(f"{struct.name}_{method.name}")
                 self.fns[method] = self.declare(method, [this_type], name)
-        for struct in node.structs:                              # ...then the bodies
+        for struct in structs:                                   # ...then the bodies
             for method in struct.methods:
                 method.accept(self)
         for fn in node.fns:
@@ -258,6 +272,11 @@ class CodeGen:
         for field, value in zip(struct.fields, node.values):     # Point p{10, 20}: field by field
             field_ptr = self.gep(ptr, [field.index], name=f"{node.name}.{field.name}")
             self.builder.store(self.coerce(value.accept(self), value.type, field.type_name), field_ptr)
+
+    def visit_lambda(self, node):
+        # Its struct and its call are built with the program's; here stands only the
+        # variable: an alloca, and a gep and a store per capture -- the copy, taken now.
+        node.decl.accept(self)
 
     def visit_assign(self, node):
         value = self.coerce(node.value.accept(self), node.value.type, node.target_type)
@@ -402,12 +421,16 @@ class CodeGen:
         return ptr
 
     def visit_call(self, node):
+        if node.callable:                                        # triple(14): triple.call(14)
+            return node.callable.accept(self)
         this = []
         if isinstance(node.fn, MemberFnNode):                    # d2() in Point: on the same object
             this = [self.slots[self.current_fn.this]]
         return self.builder.call(self.fns[node.fn], [*this, *self.args(node)], name=node.name)
 
     def visit_member_call(self, node):
+        if node.callable:                                        # s.scale(7): s.scale.call(7)
+            return node.callable.accept(self)
         this = self.object_address(node.target)                  # the object, by address
         return self.builder.call(self.fns[node.fn], [this, *self.args(node)], name=node.name)
 

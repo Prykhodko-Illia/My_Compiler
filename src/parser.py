@@ -6,7 +6,10 @@ Recursive descent, written by hand: one method per rule of grammar.ebnf.
   struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
   field_decl::= type [ "mut" ] ident NL
   fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
-  statement ::= decl | assign | if | while | print
+  statement ::= decl | assign | if | while | print | lambda
+  lambda    ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
+                "(" [ type ident { "," type ident } ] ")" "->" type NL block
+  capture   ::= [ "mut" ] ident
   decl      ::= type [ "mut" ] ident init
   init      ::= "{" value { "," value } "}"
   value     ::= expr | init
@@ -47,15 +50,17 @@ a declaration when a second name or "mut" follows (Point p{...}, Point mut p{...
 assignment otherwise (p := ..., p.x := ...), so there the parser looks at two tokens. (A
 '(' second is a call standing alone, which is not a statement.) Inside an expression a
 name followed by '(' is a call, by '.' a field chain, by anything else a variable -- one
-token after the name, so still one token of look-ahead. The same holds inside a chain: a
+token after the name, so still one token of look-ahead. A line that starts with fn is a
+lambda when its fourth token is '[' (fn add_k := [k]...) -- the one other place the parser
+looks further than the next token; without the '[' a fn inside a block stays an error. The same holds inside a chain: a
 '(' after one of its names makes that name a member function called on the chain before
 it. A call does not end the chain: a '.' after its ')' goes on into the result. It never
 scans further. It reads tokens only, never the source text, and puts no token into the
 tree.
 """
 
-from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, ConstNode,
-                        DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, Link, MemberCallNode,
+from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, Capture, ConstNode,
+                        DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, LambdaNode, Link, MemberCallNode,
                         MemberFnNode, MemberNode, NotNode, ParamNode, PrintNode, ProgramNode, ReadNode,
                         ResultFieldNode, StringNode, StructNode, VarNode, WhileNode)
 from .errors import CompileError
@@ -140,7 +145,8 @@ class Parser:
         while is_token(self.peek_line(), "keyword", "definition", "struct"):
             self.next_line()
             structs.append(self.parse_struct())
-        while is_token(self.peek_line(), "keyword", "definition", "fn"):
+        # A lambda is a statement: the first one ends the functions, as any statement does.
+        while is_token(self.peek_line(), "keyword", "definition", "fn") and not self.lambda_ahead():
             self.next_line()
             fns.append(self.parse_fn())
         statements, exit_node = self.parse_lines(None)
@@ -192,6 +198,57 @@ class Parser:
         self.eat()                                             # fn
         name = self.expect("identifier", None, "a function name")
         self.expect("operator", "assign", f"':=' after 'fn {name.text}'")
+        if member and self.at("separator", "capture_open"):
+            raise self.error(f"member function '{name.text}' cannot have a capture list: only a lambda takes one")
+        params, result, body = self.parse_signature(name)
+        return (MemberFnNode if member else FnNode)(name.line, name.col, name.text, params, result.text,
+                                                    (result.line, result.col), body)
+
+    def parse_lambda(self):
+        """lambda ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
+                      "(" [ type ident { "," type ident } ] ")" "->" type NL block
+
+        A function with a capture list, standing where a statement does."""
+        self.eat()                                             # fn
+        name = self.eat()                                      # lambda_here() saw the name, ':=' and '['
+        self.eat()                                             # :=
+        self.eat()                                             # [
+        captures = []
+        if not self.at("separator", "capture_close"):
+            captures.append(self.parse_capture())
+            while self.at("separator", "comma"):
+                self.eat()
+                captures.append(self.parse_capture())
+        self.expect("separator", "capture_close", "',' or ']' after a capture")
+        params, result, body = self.parse_signature(name)
+        return LambdaNode(name.line, name.col, name.text, captures, params, result.text,
+                          (result.line, result.col), body)
+
+    def parse_capture(self):
+        """capture ::= [ "mut" ] ident"""
+        mutable = self.at("keyword", "specifier")
+        if mutable:
+            self.eat()
+        name = self.expect("identifier", None, "the name of a variable to capture")
+        return Capture(name.text, mutable, name.line, name.col)
+
+    def lambda_here(self):
+        """Does the current line, at the cursor, start a lambda: fn name := [ ?"""
+        toks = self.toks[self.pos:self.pos + 4] + [None] * 4
+        return (is_token(toks[0], "keyword", "definition", "fn") and is_token(toks[1], "identifier")
+                and is_token(toks[2], "operator", "assign") and is_token(toks[3], "separator", "capture_open"))
+
+    def lambda_ahead(self):
+        """Does the next line start a lambda? The line cursor stays where it is."""
+        toks, pos = self.toks, self.pos
+        self.toks, self.pos = [t for t in self.lines[self.next] if t.kind != "endline"], 0
+        found = self.lambda_here()
+        self.toks, self.pos = toks, pos
+        return found
+
+    def parse_signature(self, name):
+        """ "(" [ type ident { "," type ident } ] ")" "->" type NL block -- what a function,
+        a member function and a lambda all have after the name, and after the captures."""
         self.expect("separator", "open", "'(' before the parameters")
         params = []
         if not self.at("separator", "close"):
@@ -206,8 +263,7 @@ class Parser:
         body = self.parse_block(f"'fn {name.text}'")
         if body.exit is None:
             raise CompileError(*body.close, f"the body of '{name.text}' must end with exit")
-        return (MemberFnNode if member else FnNode)(name.line, name.col, name.text, params, result.text,
-                                                    (result.line, result.col), body)
+        return params, result, body
 
     def parse_param(self):
         """type ident"""
@@ -254,11 +310,13 @@ class Parser:
                 statements.append(self.parse_statement())
 
     def parse_statement(self):
-        """statement ::= decl | assign | if | while | print"""
+        """statement ::= decl | assign | if | while | print | lambda"""
         if self.at("keyword", "branch", "if"):
             return self.parse_if()                             # it reads its own lines
         if self.at("keyword", "loop"):
             return self.parse_while()                          # so does a while
+        if self.lambda_here():
+            return self.parse_lambda()                         # and a lambda: its body is a block
         second = self.peek_second()
         if self.at("keyword", "builtin", "print"):
             node = self.parse_print()

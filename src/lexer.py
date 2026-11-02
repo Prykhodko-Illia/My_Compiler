@@ -32,7 +32,7 @@ class Token:
     col: int         # 1-based position of the token's first byte
     sub: str = ""    # typename | specifier | statement | branch | loop | definition | boolean | builtin
                      # numeric | start | end | assign | plus | minus | times | eq | ne | not
-                     # dot | arrow | comma | open | close
+                     # dot | arrow | comma | open | close | capture_open | capture_close
 
     def __str__(self):
         text = "\\n" if self.kind == "endline" else self.text
@@ -68,6 +68,8 @@ SINGLE_BYTE = {                  # tokens that are complete after one byte
     ord(","): ("separator", "comma"),       # Point p{10, 20}, f(a, b)
     ord("("): ("separator", "open"),        # only around parameters and arguments:
     ord(")"): ("separator", "close"),       # there are no grouping parentheses
+    ord("["): ("separator", "capture_open"),   # only around a lambda's captures:
+    ord("]"): ("separator", "capture_close"),  # fn add_k := [k](i32 y) -> i32
 }
 
 SPACE, TAB, NEWLINE = 32, 9, 10

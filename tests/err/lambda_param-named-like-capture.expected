@@ -1,0 +1,1 @@
+compilation error: line 17:21: parameter 'k' of lambda 'add_k' has the name of a capture

@@ -1,0 +1,15 @@
+struct Scale
+{
+    i32 k
+    fn apply := (i32 v) -> i32
+    {
+        fn times := [v]() -> i32
+        {
+            i32 r{v * k}
+            exit r
+        }
+        exit times()
+    }
+}
+Scale s{2}
+exit s.apply(3)

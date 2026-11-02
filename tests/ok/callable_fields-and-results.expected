@@ -1,0 +1,7 @@
+10
+20
+3
+Clock{ticks: Counter{n: 3}, base: 10}
+3
+7
+Program exit with result 3

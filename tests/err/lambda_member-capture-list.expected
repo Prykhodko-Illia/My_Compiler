@@ -1,0 +1,1 @@
+compilation error: line 4:16: member function 'call' cannot have a capture list: only a lambda takes one

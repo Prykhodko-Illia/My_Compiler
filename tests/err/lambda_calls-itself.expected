@@ -1,0 +1,1 @@
+compilation error: line 19:11: lambda 'add_k' cannot call itself: its name is declared after its body

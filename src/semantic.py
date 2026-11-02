@@ -42,6 +42,36 @@ statements come after, so their member calls are checked on the spot. A mutating
 function is called only through a chain whose every link is mut: the variable and each
 field on the way.
 
+An object whose struct declares a member function named call can be called like a
+function: triple(14) is triple.call(14). The parser cannot tell a variable from a function,
+so it writes a CallNode either way; the decision is made here, by the names in scope. A
+name that is a visible variable -- a local, a parameter, a field inside a member function
+-- is an object to call; otherwise it is a function, looked up as before; a name that is
+both is refused at the call. For an object the pass puts a CallableCallNode -- the target,
+the member function call, the same arguments -- in place of the call, and checks it as the
+member call it is: the arguments, the mutation rule, and nothing else to generate. After a
+dot the same holds: in s.scale(7), scale is a field of s, so the call is s.scale.call(7).
+
+A lambda is rewritten here too, because only here are the types of its captures known:
+fn add_k := [k](i32 y) -> i32 becomes a struct lambda.add_k with one field per capture
+(const, or mut for [mut k]), its member function call with the lambda's parameters, result and body, and a
+variable add_k of that struct, initialised where the lambda stands with the captured
+values -- a copy, so changing k later does not change add_k. The struct joins the
+program's lambda_structs; add_k(5) is then the call of an object. The body is checked as
+that member function: a fresh stack with its parameters, and the captures as the fields of
+its object -- so it sees its parameters, its locals, its captures and the global functions,
+nothing else. What stood around it is kept on a stack of its own, only to say that a name
+the body uses is visible outside but not captured. The variable is declared after the
+body, so a lambda cannot call itself. A struct without a name in the language has a type
+no parameter, result, variable or field can have, so a lambda value goes nowhere else.
+
+[mut n] gives the lambda a copy of its own to change: the field is mut, so a call that
+assigns it -- or calls a mutating call on it, a captured lambda among them -- is a
+mutating member function, and the mutation rule decides where it may be called, as for
+any other. The variable of a lambda with a mut capture is mut, so next() works where it
+stands; inside another lambda, [next] is a const copy and [mut next] a mutable one. The
+variable that was captured never changes.
+
 Its contract with the code generator is a handful of fields on the tree:
   * `node.type` on every expression node -- "i32", "i64", "bool" or a struct name;
   * `node.decl` on every VarNode, FieldNode and AssignNode -- the declaration the name
@@ -49,7 +79,8 @@ Its contract with the code generator is a handful of fields on the tree:
   * `node.indices` on every VarNode, FieldNode and AssignNode -- the field chain as field
     numbers;
   * `node.target_type` on every AssignNode, `node.copy` on every DeclNode;
-  * `node.fn` on every CallNode and MemberCallNode -- the function it calls;
+  * `node.fn` on every CallNode and MemberCallNode -- the function it calls -- or
+    `node.callable` when it calls an object: the CallableCallNode to emit instead;
   * `node.struct` and `node.this` on every MemberFnNode.
 The generator reads those and looks nothing up -- not a variable by its name, not a
 field by its name. With shadowing that matters: three x in three scopes are three
@@ -89,10 +120,30 @@ The member function rules:
   * a mutating one is called only through a chain of mut links;
   * a call result is a temporary copy: a field of it may be read when it is a struct, and
     any member function may be called on it, a mutating one too.
+
+The callable object rules:
+  * name(args) on a variable needs a struct that declares call -- not a struct without
+    one, not an integer or a bool -- and is name.call(args);
+  * obj.name(args) where name is a field of obj is obj.name.call(args);
+  * a name that is both a visible variable and a function cannot be called;
+  * a wrong argument, or a mutating call through a const link, is reported for the object,
+    not for its call.
+
+The lambda rules:
+  * a capture names a variable visible where the lambda stands, once; a parameter does
+    not share a name with a capture;
+  * inside the body a capture is const unless written [mut n], and a name of the scopes
+    around it that is not captured is an error;
+  * a lambda with a mut capture is a mut variable; its call is mutating when it changes a
+    capture, and is then called only through mut links;
+  * a lambda does not call itself;
+  * a lambda is not an argument, the value of exit, a value of a declaration, a side of
+    an assignment or the value of a print, and its captures are not visible outside it.
 """
 
-from .ast_nodes import (CallNode, ConstNode, DeclNode, FieldNode, InitNode, Link, MemberCallNode, MemberFnNode,
-                        MemberNode, ParamNode, ReadNode, ResultFieldNode, ThisParam, VarNode, chain)
+from .ast_nodes import (CallableCallNode, CallNode, ConstNode, DeclNode, FieldNode, InitNode, LambdaNode, Link,
+                        MemberCallNode, MemberFnNode, MemberNode, ParamNode, ReadNode, ResultFieldNode, StructNode,
+                        ThisParam, VarNode, chain)
 from .errors import CompileError, error_at
 
 I32_MAX = 2**31 - 1
@@ -114,6 +165,10 @@ class SemanticChecker:
         self.top_level_names = set()      # names the program declares outside any block
         self.mutation_known = False       # every member function is marked mutating or not
         self.deferred = []                # member calls in member bodies, checked once it is
+        self.program = None               # the ProgramNode: the struct of every lambda joins it
+        self.lambda_types = {}            # struct name of a lambda -> the lambda's name
+        self.lambda_methods = []          # the call of each lambda met before the marking
+        self.enclosing = []               # (scopes, current_fn) around each lambda body being checked
 
     def run(self, program):
         program.accept(self)
@@ -135,12 +190,41 @@ class SemanticChecker:
         if decl is not None:
             return decl
         fn = self.current_fn
+        lambda_name = getattr(fn, "lambda_name", None)
+        if lambda_name and self.visible_outside(name):
+            raise error_at(node, f"'{name}' is not captured by lambda '{lambda_name}': "
+                                 f"add it to the capture list, [{name}]")
         if fn is not None and name in self.top_level_names:
-            raise error_at(node, f"function '{qualified(fn)}' cannot see the top-level variable "
+            raise error_at(node, f"{title(fn)} cannot see the top-level variable "
                                  f"'{name}': a function sees only its parameters and its own variables")
+        if lambda_name:
+            raise error_at(node, f"'{name}' is not a parameter, a variable or a capture of lambda '{lambda_name}'")
         if isinstance(fn, MemberFnNode):
             raise error_at(node, f"'{name}' is not a parameter, a variable or a field of '{fn.struct.name}'")
         raise error_at(node, f"variable '{name}' is used before its declaration")
+
+    def visible_outside(self, name):
+        """Is `name` a variable where a lambda being checked stands -- in any of the scopes
+        around it, the fields of a member function among them? Only to say why the body
+        does not see it."""
+        for scopes, fn in self.enclosing:
+            if any(name in frame for frame in scopes):
+                return True
+            if isinstance(fn, MemberFnNode) and named(fn.struct.fields, name):
+                return True
+        return False
+
+    def open_lambdas(self):
+        """The names of the lambdas whose bodies are being checked: none is declared yet."""
+        fns = [self.current_fn, *(fn for _, fn in self.enclosing)]
+        return {fn.lambda_name for fn in fns if getattr(fn, "lambda_name", None)}
+
+    def not_lambda(self, expr, what, holder):
+        """A lambda's struct has no name in the language, so its value goes nowhere a type
+        would have to be written: no parameter, result, variable or field has its type."""
+        if expr.type in self.lambda_types:
+            raise error_at(expr, f"'{written(expr)}' is a lambda and {what}: "
+                                 f"its type has no name, so no {holder} can have it")
 
     def check_type(self, node):
         """A declaration's type must be built in or a struct declared above it."""
@@ -152,6 +236,8 @@ class SemanticChecker:
         struct = self.structs.get(type_name)
         if struct is None:
             raise error_at(link, f"'{path}' is {type_name}, not a struct: it has no field '{link.name}'")
+        if path is not None and type_name in self.lambda_types:   # path is None for its own body
+            raise error_at(link, f"'{path}' is a lambda: its captures are not visible outside its body")
         for field in struct.fields:
             if field.name == link.name:
                 return field
@@ -179,6 +265,10 @@ class SemanticChecker:
             field = self.field_of(type_name, link, path)
             path = link.name if path is None else f"{path}.{link.name}"
             if not field.mutable:
+                if (check_mut and isinstance(decl, ThisParam) and link is links[0]
+                        and getattr(self.current_fn, "lambda_name", None)):        # x := ... on a capture
+                    raise error_at(link, f"cannot assign to '{target}': the capture '{link.name}' is const, "
+                                         f"write [mut {link.name}]")
                 if check_mut:
                     raise error_at(link, f"cannot assign to '{target}': '{path}' is not mut")
                 const_link = const_link or path
@@ -210,11 +300,12 @@ class SemanticChecker:
     # -- statements ---------------------------------------------------------
 
     def visit_program(self, node):
+        self.program = node
         for struct in node.structs:
             struct.accept(self)
         # The bodies are checked before the statements, so the top-level names are collected
         # first -- only to say why such a name is not visible inside a function.
-        self.top_level_names = {s.name for s in node.statements if isinstance(s, DeclNode)}
+        self.top_level_names = {s.name for s in node.statements if isinstance(s, (DeclNode, LambdaNode))}
         methods = [method for struct in node.structs for method in struct.methods]
         for struct in node.structs:       # first every signature...
             for method in struct.methods:
@@ -224,7 +315,7 @@ class SemanticChecker:
             self.declare_fn(fn)
         for method in methods:            # ...then every body, which may call any of them:
             method.accept(self)           # the member bodies first, for the mutation rule
-        self.mark_mutating(methods)
+        self.mark_mutating([*methods, *self.lambda_methods])     # with the lambdas inside them
         self.mutation_known = True
         for call in self.deferred:
             self.check_mutation(call)
@@ -245,7 +336,8 @@ class SemanticChecker:
         names = set()
         for param in node.params:
             if param.name in names:
-                raise error_at(param, f"function '{node.name}' already has a parameter '{param.name}'")
+                who = title(node) if getattr(node, "lambda_name", None) else f"function '{node.name}'"
+                raise error_at(param, f"{who} already has a parameter '{param.name}'")
             self.check_type(param)
             names.add(param.name)
         if node.result_type not in BUILT_IN and node.result_type not in self.structs:
@@ -265,7 +357,7 @@ class SemanticChecker:
                     method.mutating = changed = True
 
     def visit_fn(self, node):
-        outer = self.scopes
+        outer, outer_fn = self.scopes, self.current_fn     # a lambda's body is checked inside another
         # A fresh stack: the parameters, and the body's lines in the same frame. Nothing of
         # the program's frames is on it, so a top-level variable is not visible here.
         self.scopes = [{param.name: param for param in node.params}]
@@ -273,7 +365,7 @@ class SemanticChecker:
         for stmt in node.body.statements:
             stmt.accept(self)
         node.body.exit.accept(self)
-        self.scopes, self.current_fn = outer, None
+        self.scopes, self.current_fn = outer, outer_fn
 
     # A member body is checked the same way: the fields of its object come in through find().
     visit_member_fn = visit_fn
@@ -310,6 +402,63 @@ class SemanticChecker:
         node.copy = self.check_values(node.values, node.type_name, node.brace, node.name, node)
         self.scopes[-1][node.name] = node
 
+    def visit_lambda(self, node):
+        """fn add_k := [k](i32 y) -> i32 becomes what the compiler already has: a struct
+        lambda.add_k with one const field per capture, of the captured variable's type; its
+        member function call with the lambda's parameters, result and body; and a variable
+        add_k of that struct, initialised here with the captured values. From then on
+        add_k(5) is the call of an object, like any other."""
+        if node.name in self.scopes[-1]:
+            raise error_at(node, f"variable '{node.name}' is already declared in this block")
+        fields, values = [], []
+        for capture in node.captures:
+            if named(fields, capture.name):
+                raise error_at(capture, f"'{capture.name}' is captured twice")
+            if self.find(capture.name) is None:
+                raise error_at(capture, f"cannot capture '{capture.name}': no variable '{capture.name}' is visible here")
+            value = VarNode(capture.line, capture.col, capture.name)            # the copy is taken here
+            # [mut n]: a copy the body may change -- of a const variable too, it is a copy.
+            field = MemberNode(capture.line, capture.col, capture.name, value.accept(self), capture.mutable,
+                               (capture.line, capture.col))
+            field.index = len(fields)
+            fields.append(field)
+            values.append(value)
+        for param in node.params:
+            if named(fields, param.name):
+                raise error_at(param, f"parameter '{param.name}' of lambda '{node.name}' has the name of a capture")
+
+        # A dot never appears in a name the program declares, so lambda.add_k cannot clash
+        # with a struct of its own; two lambdas of one name, in two scopes, get a number.
+        struct_name, count = f"lambda.{node.name}", 1
+        while struct_name in self.structs:
+            count += 1
+            struct_name = f"lambda.{node.name}.{count}"
+        call = MemberFnNode(node.line, node.col, "call", node.params, node.result_type, node.result_at, node.body)
+        struct = StructNode(node.line, node.col, struct_name, fields, [call])
+        call.struct, call.this, call.lambda_name = struct, ThisParam(struct_name), node.name
+        self.check_signature(call)
+        self.structs[struct_name] = struct
+        self.lambda_types[struct_name] = node.name
+        self.program.lambda_structs.append(struct)
+
+        # The body sees its parameters, its locals and its captures -- the fields of its
+        # object, through find() -- and the global functions; nothing from around it.
+        self.enclosing.append((self.scopes, self.current_fn))
+        call.accept(self)
+        self.enclosing.pop()
+        if self.mutation_known:           # no cycle: a lambda calls only what is declared above it
+            call.mutating = call.assigns_field or any(callee.mutating for callee in call.calls_on_self)
+        else:                             # inside a member body: marked with the member functions
+            self.lambda_methods.append(call)
+
+        # Declared only now: the body could not call the lambda it belongs to. It is mut when
+        # a capture is, so a call that changes that copy works where the lambda stands.
+        mutable = any(capture.mutable for capture in node.captures)
+        node.decl = DeclNode(node.line, node.col, node.name, struct_name, mutable, values,
+                             (node.line, node.col), (node.line, node.col))
+        self.scopes[-1][node.name] = node.decl
+        node.struct = struct
+
     def check_values(self, values, type_name, brace, path, at):
         """The values of one {} -- a declaration's, or an inner one -- against the type it
         initialises; `path` names what is being initialised (p, c.center). The same rules at
@@ -319,6 +468,7 @@ class SemanticChecker:
         for value in values:
             if not isinstance(value, InitNode):   # an inner {} has no type of its own
                 value.accept(self)
+                self.not_lambda(value, f"cannot initialise '{path}'", "variable or field")
         count = len(values)
         struct = self.structs.get(type_name)
         if struct is None:                        # a built-in type: exactly one plain value
@@ -350,6 +500,9 @@ class SemanticChecker:
 
     def visit_assign(self, node):
         target = chain(node.name, node.links)
+        decl = self.find(node.name)
+        if decl is not None and not node.links and decl.type_name in self.lambda_types:
+            raise error_at(node, f"cannot assign to '{target}': it is a lambda, and a lambda is never assigned")
         node.target_type = self.walk_chain(node, node.links, check_mut=True)
         if isinstance(node.decl, ThisParam):   # a field of the object: the function is mutating
             self.current_fn.assigns_field = True
@@ -357,10 +510,14 @@ class SemanticChecker:
         if inner:
             raise error_at(node, f"cannot assign to '{target}': its field '{inner}' is not mut")
         node.value.accept(self)
+        self.not_lambda(node.value, "cannot be assigned", "variable or field")
         self.check_assignable(node.value, node.target_type, node, f"assign to '{target}'")
 
     def visit_print(self, node):
-        node.value.accept(self)           # anything with a value prints; the literal too
+        node.value.accept(self)           # anything with a value prints; the literal too -- not a lambda
+        if node.value.type in self.lambda_types:
+            raise error_at(node.value, f"'{written(node.value)}' is a lambda and cannot be printed: "
+                                       f"its captures are not visible outside its body")
 
     def check_condition(self, node, keyword):
         condition = node.condition.accept(self)
@@ -389,10 +546,11 @@ class SemanticChecker:
 
     def visit_exit(self, node):
         value = node.value.accept(self)
+        self.not_lambda(node.value, "cannot be the value of exit", "result type")
         fn = self.current_fn
         if fn is not None:                # in a function: the result, of the result type
             self.check_assignable(node.value, fn.result_type, node, None,
-                                  f"function '{qualified(fn)}' returns {fn.result_type}, but exit has {value}")
+                                  f"{title(fn)} returns {fn.result_type}, but exit has {value}")
         elif value not in BUILT_IN:       # printf has no format for a whole object
             raise error_at(node, f"exit takes an integer or a bool, got {value}")
 
@@ -427,33 +585,77 @@ class SemanticChecker:
         return node.type
 
     def visit_call(self, node):
+        """name(...): a visible variable makes it a call of that object, name.call(...);
+        otherwise a member function of the same struct, then a global function. A name that
+        is both a variable and a function is refused here -- declaring both is not."""
         current = self.current_fn
-        method = named(current.struct.methods, node.name) if isinstance(current, MemberFnNode) else None
+        lambda_name = getattr(current, "lambda_name", None)
+        # The struct of a lambda has only its call, and the lambda cannot call itself.
+        method = (named(current.struct.methods, node.name)
+                  if isinstance(current, MemberFnNode) and not lambda_name else None)
+        fn = method or self.fns.get(node.name)
+        if self.find(node.name) is not None:
+            if fn is not None:
+                raise error_at(node, f"'{node.name}' is both a variable and a function: rename one of them")
+            target = VarNode(node.line, node.col, node.name)
+            return self.call_object(node, target, node.name)
+        if fn is None:
+            if node.name in self.open_lambdas():
+                raise error_at(node, f"lambda '{node.name}' cannot call itself: "
+                                     f"its name is declared after its body")
+            if lambda_name and self.visible_outside(node.name):
+                raise error_at(node, f"'{node.name}' is not captured by lambda '{lambda_name}': "
+                                     f"add it to the capture list, [{node.name}]")
+            raise error_at(node, f"function '{node.name}' is not declared")
         if method is not None:            # d2() inside Point: d2 on the same object
             current.calls_on_self.append(method)
-            fn = method
-        else:
-            fn = self.fns.get(node.name)
-            if fn is None:
-                raise error_at(node, f"function '{node.name}' is not declared")
         self.check_args(node, fn)
         node.fn = fn
         node.type = fn.result_type
         return node.type
 
+    def call_object(self, node, target, shown):
+        """Put target.call(args) in place of `node` and check it as the member call it is."""
+        node.callable = CallableCallNode(node.line, node.col, target, node.args, shown)
+        node.type = self.visit_member_call(node.callable)
+        return node.type
+
+    def call_field(self, node, field):
+        """obj.name(...) where name is a field of obj: obj.name.call(...). The object has been
+        checked already, so the new target is typed here rather than walked again -- a call
+        result in it must not be checked twice."""
+        target, link = node.target, Link(node.name, node.line, node.col)
+        if isinstance(target, (VarNode, FieldNode)):
+            target = FieldNode(target.line, target.col, target.name, [*getattr(target, "links", []), link])
+        else:                             # a field of a call result: p.moved(1).scale(3)
+            value, links, indices = target, [link], [field.index]
+            if isinstance(target, ResultFieldNode):               # c.grown(1).shape.scale(3)
+                value, links, indices = target.value, [*target.links, link], [*target.indices, field.index]
+            target = ResultFieldNode(node.line, node.col, value, links)
+            target.indices, target.type = indices, field.type_name
+        return self.call_object(node, target, written(target))
+
     def visit_member_call(self, node):
         target = node.target
+        callable_call = isinstance(node, CallableCallNode)
         named_object = isinstance(target, (VarNode, FieldNode))   # else a call result, or a field of one
         if named_object and self.find(target.name) is None and target.name in self.structs:
             raise error_at(target, f"'{node.name}' is called on the type '{target.name}': "
                                    f"a member function is called on an object")
-        type_name = target.accept(self)
+        type_name = target.type or target.accept(self)            # typed already: see call_field
         struct = self.structs.get(type_name)
         if struct is None:
+            if callable_call:
+                raise error_at(node, f"'{node.shown}' is not callable: it is {type_name}")
             raise error_at(node, f"'{written(target)}' is {type_name}, not a struct: "
                                  f"it has no member function '{node.name}'")
         fn = named(struct.methods, node.name)
         if fn is None:
+            if callable_call:
+                raise error_at(node, f"'{node.shown}' is not callable: {type_name} has no member function 'call'")
+            field = named(struct.fields, node.name)
+            if field is not None:         # s.scale(7): a field, so an object to call
+                return self.call_field(node, field)
             raise error_at(node, f"struct '{struct.name}' has no member function '{node.name}'")
         self.check_args(node, fn)
         if named_object and isinstance(target.decl, ThisParam):   # on its own object, or a field of it
@@ -471,6 +673,9 @@ class SemanticChecker:
         result is a temporary copy, not a link: changing it changes nobody's object."""
         target = node.target
         if node.fn.mutating and isinstance(target, (VarNode, FieldNode)) and target.const_link:
+            if isinstance(node, CallableCallNode):
+                why = "it is not mut" if target.const_link == node.shown else f"'{target.const_link}' is not mut"
+                raise error_at(node, f"cannot call '{node.shown}': its 'call' changes it, and {why}")
             raise error_at(node, f"cannot call '{node.name}' on '{written(target)}': "
                                  f"it changes the object, and '{target.const_link}' is not mut")
 
@@ -490,14 +695,17 @@ class SemanticChecker:
         return node.type
 
     def check_args(self, node, fn):
-        """One argument per parameter, each assignable to the parameter's type."""
+        """One argument per parameter, each assignable to the parameter's type. A call of an
+        object names the object, not its 'call'."""
+        name = node.shown if isinstance(node, CallableCallNode) else qualified(fn)
         if len(node.args) != len(fn.params):
-            raise error_at(node, f"function '{qualified(fn)}' takes {plural(len(fn.params), 'argument')}, "
-                                 f"got {len(node.args)}")
+            what = f"'{name}'" if isinstance(node, CallableCallNode) else title(fn)
+            raise error_at(node, f"{what} takes {plural(len(fn.params), 'argument')}, got {len(node.args)}")
         for param, arg in zip(fn.params, node.args):
             arg.accept(self)
+            self.not_lambda(arg, f"cannot be passed to '{name}'", "parameter")
             self.check_assignable(arg, param.type_name, arg, None,
-                                  f"argument '{param.name}' of '{qualified(fn)}' is {param.type_name}, got {arg.type}")
+                                  f"argument '{param.name}' of '{name}' is {param.type_name}, got {arg.type}")
 
     def visit_read(self, node):
         node.type = "i32"
@@ -544,8 +752,16 @@ def written(expr):
 
 
 def qualified(fn):
-    """A function's name in a message: Point.shift for a member function."""
-    return f"{fn.struct.name}.{fn.name}" if isinstance(fn, MemberFnNode) else fn.name
+    """A function's name in a message: Point.shift for a member function, add_k for the
+    call of a lambda."""
+    if isinstance(fn, MemberFnNode):
+        return fn.lambda_name or f"{fn.struct.name}.{fn.name}"
+    return fn.name
+
+
+def title(fn):
+    """A function in a message, with what it is: function 'sq', lambda 'add_k'."""
+    return f"lambda '{fn.lambda_name}'" if getattr(fn, "lambda_name", None) else f"function '{qualified(fn)}'"
 
 
 def check(program):

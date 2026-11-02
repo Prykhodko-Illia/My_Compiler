@@ -1,0 +1,9 @@
+i32 k{1}
+if k == 1
+{
+    fn helper := (i32 v) -> i32
+    {
+        exit v
+    }
+}
+exit k

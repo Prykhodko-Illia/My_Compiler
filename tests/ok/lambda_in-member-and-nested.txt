@@ -1,0 +1,41 @@
+struct Scale
+{
+    i32 k
+    fn call := (i32 v) -> i32
+    {
+        i32 r{v * k}
+        exit r
+    }
+}
+struct Line
+{
+    i32 start
+    i32 step
+    fn at := (i32 n) -> i32
+    {
+        fn point := [start, step](i32 i) -> i32
+        {
+            fn offset := [step](i32 j) -> i32
+            {
+                i32 r{step * j}
+                exit r
+            }
+            i32 r{start + offset(i)}
+            exit r
+        }
+        exit point(n)
+    }
+}
+Line l{100, 7}
+Scale triple{3}
+print(l.at(2))
+if l.at(0) == 100
+{
+    fn apply := [triple](i32 v) -> i32
+    {
+        i32 r{triple(v) + triple.k}
+        exit r
+    }
+    print(apply(4))
+}
+exit l.at(1)

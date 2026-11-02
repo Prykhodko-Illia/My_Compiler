@@ -1,0 +1,22 @@
+i32 start{10}
+fn count := [mut start]() -> i32
+{
+    start := start + 1
+    exit start
+}
+i32 mut i{0}
+i32 mut last{0}
+while i != 3
+{
+    last := count()
+    fn fresh := [mut i]() -> i32
+    {
+        i := i * 10
+        exit i
+    }
+    print(fresh())
+    print(fresh())
+    i := i + 1
+}
+print(last)
+exit start

@@ -1,0 +1,12 @@
+fn cube := (i32 v) -> i32
+{
+    i32 r{v * v * v}
+    exit r
+}
+fn plus_one_cubed := [](i32 v) -> i32
+{
+    i32 r{cube(v) + 1}
+    exit r
+}
+print(plus_one_cubed(2))
+exit plus_one_cubed(3)

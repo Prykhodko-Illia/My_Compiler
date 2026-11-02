@@ -1,0 +1,24 @@
+struct Ticker
+{
+    i32 mut ticks
+    fn run := (i32 times) -> i32
+    {
+        fn tick := [mut ticks]() -> i32
+        {
+            ticks := ticks + 1
+            exit ticks
+        }
+        i32 mut i{0}
+        i32 mut last{0}
+        while i != times
+        {
+            last := tick()
+            i := i + 1
+        }
+        exit last
+    }
+}
+Ticker t{7}
+print(t.run(3))
+print(t)
+exit t.run(1)
