@@ -1,141 +1,125 @@
-AI usage log - Practice 9 (the first optimization pass: --remove-unused)
-========================================================================
+AI usage log - Practice 10 (a real program as a binary, and extern fn: calling C)
+=================================================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
-Model:   Claude Opus 5.5 (claude-opus-5-5), one session (prompts 1-6)
-Date:    2026-11-02
-Setup:   The AI edited files in ~/Study/compilers and ran the compiler, the tests and lli on my
-         Multipass VM (noble-compilers) with `multipass exec`, where the repository is mounted at
-         ~/compilers. On my request it created the practice-9 branch from main; it made the
-         commits on its own, one per task, under my git user, with no AI co-author line. Pushing
-         the branch and opening the pull request are mine.
+Model:   Claude Opus 5.5 (claude-opus-5-5), one session (prompts 1-4)
+Date:    2026-11-06
+Setup:   The AI edited files in ~/Study/compilers and ran the compiler, llc, clang, lli, nm and
+         the tests on my Multipass VM (noble-compilers) with `multipass exec`, where the
+         repository is mounted at ~/compilers. On my request it created the practice-10 branch
+         from practice-9 (not yet merged into main), made the commits under my git user with no
+         AI co-author line, pushed the branch and opened the pull request.
 
-Below is every prompt I sent about Practice 9, quoted as written, followed by what the AI did.
+reflection.md (Task 2) is mine: written by me, without an AI tool. The AI did not draft,
+edit or review it.
+
+Below is every prompt I sent about Practice 10, quoted as written, followed by what the AI did.
 
 
 1. Prompt:
-   [attached CS400_Practice_9.pdf]
+   [attached CS400_Practice_10.pdf]
    "look at this task and tell me what I should do here"
 
    What the AI did:
-   Its PDF reader could not render the file (pdftoppm is not installed on my Mac), so it took the
-   text out with a short Swift script using PDFKit, in its scratch folder. Looked at compiler.py,
-   the node classes and run_tests.sh, and wrote no code. Explained the pass and the three tasks
-   and the additional one, the rules that give 0 (opt on the output, IR from strings, a missing
-   ai_usage.txt), what has to be shown at the defence, and an order to do it in. Pointed out
-   that compiler.py read its flags in a fixed position, one of the pitfalls the PDF lists, and
-   that the checker already leaves a `decl` link on every VarNode, FieldNode and AssignNode.
+   Its PDF reader could not render the file (pdftoppm is not installed on my Mac), so it took
+   the text out with a short Swift script using PDFKit, in its scratch folder. Looked at
+   full_compiler.sh, run_tests.sh and the struct printer in src/codegen.py, and wrote no code.
+   Explained the warm-up, Task 1 (the points binary and the three tests/io sessions), Task 2
+   (the reflection, which has to be my own text), the extern additional task, the submission
+   and the rules that give 0. Pointed out that print_struct already walks the field table, so
+   nothing names Point, and that practice-9 is not merged into main.
 
 
 2. Prompt:
-   "ok, let's do the first task, add another branch, and commit without including yourself as a
-   contributor
+   "let's create branch for the practice-10 from the practice-9
 
-   start from the first task"
+   and start doing it"
 
-   What the AI did (Task 1 - unused variables):
-   Created the practice-9 branch. New file src/optimizer.py: UseCounter, one visitor over the
-   whole tree that counts the reads of every DeclNode keyed by id(decl), through the checker's
-   decl links (an assignment target is not a read; a value with a call or read() counts as a
-   read of its own declaration, and of the declaration an assignment writes); Pruner, which
-   rebuilds every statement list without the dead declarations and the assignments to them, at
-   the top level, in if / while blocks, in function, member function and lambda bodies; and
-   remove_unused, the loop that stops when a round removes nothing. A lambda is not removed: its
-   captures count as reads and its body is walked. compiler.py: the flags may stand anywhere,
-   --remove-unused runs the pass after check() and before codegen, --ast-checked prints the tree
-   after it, an unknown flag prints the usage. Checked both warm-ups (the second one's tree line
-   for line against the PDF; exit 15 and 10 with and without the flag), a program with a kept
-   printing call, a self-feeding k, an emptied if block, and one with structs, a member function
-   and a lambda. Ran all 240 earlier tests without the flag and, through a sed-edited copy of
-   run_tests.sh, with it: 240 passing both ways. Committed as "Task 1: ...".
+   What the AI did (Task 1):
+   Created practice-10 from practice-9. Wrote tests/io/points.txt (the program from the PDF)
+   and the three sessions: points.sheet (3 4, 1 1, 0 5 with 25 -> 2 matches), points.none (the
+   same points with 7 -> 0) and points.all (-3 4, 4 -3, 5 0 with 25 -> 3), each NAME.S.in with
+   seven numbers and NAME.S.expected with the prompts and results only. Built the binary with
+   the three commands of the PDF and diffed all three sessions before touching the script. No
+   compiler change was needed. Then added a loop to run_tests.sh: every tests/io/NAME.txt is
+   built with the compiler (with the flags), llc -relocation-model=pic and clang -fPIE, and
+   every NAME.S.in is fed to the binary; the output must be exactly NAME.S.expected. Checked
+   that a wrong session is reported as FAIL with a throwaway session it deleted afterwards. 258
+   passing, with and without --remove-unused. nm points.o: T Point_d2, T fn_report, T main,
+   U printf, U scanf; points.ll has the two declare lines.
 
 
 3. Prompt:
-   "Yes, do Task 2"
+   "Yes, do extern"
 
-   What the AI did (Task 2 - unused functions):
-   UseCounter also counts the calls of every global function (CallNode.fn), wherever the call
-   stands; member functions are walked but never counted, so they stay. Pruner drops the
-   functions with no calls from program.fns; the loop handles the chain, since a removed body
-   no longer counts. Checked the PDF's chain (exit 4 both ways; the .ll defines only fn_twice
-   and main) and edge cases: a ping / pong cycle and a self-recursive function stay, functions
-   called only from a member function or a lambda stay, an uncalled one goes. 240 passing both
-   ways. Committed as "Task 2: ...".
+   What the AI did (additional task - extern fn):
+   - lexer: `extern` is a keyword (sub "linkage").
+   - ast_nodes: ExternFnNode, a FnNode with no body, its own visit_extern_fn.
+   - parser: parse_extern, among the fn declarations in any order with them; the rest of the
+     signature line is shared with fn (parse_params_and_result). Errors: a '{' on the line
+     after it ("extern function 'twice' has no body: it is defined in C"), extern in a block,
+     a function body or a struct ("'extern' is not allowed here"), extern after the statements
+     (the same message as for fn), extern without fn.
+   - semantic: externs share the function table, so a name declared twice gives the fn
+     message. check_extern: only i32 and i64 parameters and results, with the PDF's messages;
+     the C name may not be one the module already uses - main, printf, scanf, the generator's
+     global strings, fn_<name> of the program's own functions, Struct_method of a member
+     function. Those IR names moved to a new src/ir_names.py, which codegen and the checker
+     both use, so the check cannot drift from what codegen emits.
+   - codegen: an extern is declared under its own C name, before the member functions and the
+     strings take theirs; no body.
+   - optimizer: an extern is counted like a global function (no calls -> removed) and is always
+     "with an effect", so a call of one is never dropped.
+   - tests: tests/ffi/geometry.txt with geometry.c and two sessions (-3 4 -> 7, result 5;
+     2 3 -> 5, result 3); run_tests.sh builds tests/ffi like tests/io and links NAME.c;
+     tests/ok/extern_libc (abs and llabs from the statements, a function and a member function,
+     under lli); 19 tests/err (the nine the PDF lists plus main, scanf, an fn_ name, extern in a
+     struct and in a function body, declared twice, the same name as a fn, a missing fn, the
+     wrong number of arguments, an i64 into an i32 parameter); tests/opt/extern_unused (an
+     unused extern removed, declarations calling one kept).
+   - grammar.ebnf and the docstrings updated.
+   Checked by hand: nm geometry.o shows U abs and U isqrt next to U printf and U scanf, the link
+   fails without geometry.c ("undefined reference to `isqrt'"), and both geometry sessions
+   print what the PDF says. Every error message was read before it became a .expected file.
+   281 passing, with and without --remove-unused.
 
 
 4. Prompt:
-   "Yes, do Task 3"
-
-   What the AI did (Task 3 - the tests and the note):
-   run_tests.sh: ./run_tests.sh --remove-unused (or REMOVE_UNUSED=1) compiles tests/ok and
-   tests/err through the pass (the .ast / .ast-checked dumps stay the trees without it), and a
-   new loop runs every tests/opt program without and with the flag against one NAME.expected and
-   compares --remove-unused --ast-checked with NAME.astc. Wrote 10 programs in tests/opt: the two
-   warm-ups, the three-function chain, a declaration in an if block, one kept because its value
-   calls a printing function, a program where nothing is removed, the self-feeding k, a cycle
-   and a recursion, structs / member functions / lambdas, and a lambda inside a removed function.
-   It generated the .expected and .astc files in the VM and read every one before keeping it;
-   to see that the new loop really fails, it broke one .astc on purpose and restored it.
-   While thinking about the note it found a bug in its own Task 2 code: a lambda inside a removed
-   function left its struct on program.lambda_structs, so the generator still emitted its call,
-   and crashed with a KeyError when that call held the only call of a function the same round
-   removed. It reproduced the crash, then made the pruner keep only the structs of the lambdas
-   still in the tree; the last tests/opt program covers it.
-   README: a new Optimizations section (the pass, the self-feeding and cycle limits, who frees a
-   removed subtree), --remove-unused in the run / tests / repo / how-it-works sections. The
-   measurement for the note: a script in its scratch folder with weakref.ref and gc.disable(),
-   run on CPython 3.11 on my Mac and 3.12 in the VM with the same result - the removed
-   declarations, function and lambda are None right after the pass; the removed lambda's struct
-   stays alive (struct <-> call is a cycle, the one parent link the tree has) until gc.collect().
-   250 passing both ways. Committed as "Task 3: ...".
-
-
-5. Prompt:
-   "Do the extra task"
-
-   What the AI did (additional task - calls without effects):
-   effectful_functions: scans every function body (global, member, lambda call), not counting
-   the body of a lambda declared inside it, for print / read(), a while, and the functions it
-   calls (a call of an object is the call of its call); the first set is those with io, a loop,
-   mutating = True or a call path back to themselves, then every caller is added until nothing
-   changes. It is computed again each round. has_effect replaces the Task 1 rule: a value is kept
-   only when it holds read() or a call of such a function. Wrote the 5 tests the PDF lists
-   (the square / quiet / loud program, bump and peek, relay, a while and a recursion, two
-   lambdas) and checked their trees and outputs by hand; traced the rounds of the PDF's program:
-   a and b, then quiet, then square, then nothing - 4 rounds, as in the PDF. README updated.
-   255 passing both ways; one more tests/ok program now loses a pure call, with the same output.
-   Committed as "Additional task: ...".
-
-
-6. Prompt:
-   "Yes, update it"
+   "commit, reflection is on me, do everything else"
 
    What the AI did:
-   Replaced the Practice 8 log in this file with this one (the Practice 8 log is in git history,
-   merged into main) and committed it under my git user with no AI co-author line. It left the
-   "Checked by me" line for me to write.
+   Two commits: "Task 1: ..." (tests/io and its run_tests.sh loop) and "Additional task: ..."
+   (extern and its tests). README: the Practice 10 line in the intro, tests/io and tests/ffi in
+   the tests section, a "Calling C" section in the language, the extern errors in the table,
+   ir_names.py and the new folders in the repo map, the extern declare in how-it-works. CI
+   (.github/workflows/tests.yml) now also runs ./run_tests.sh --remove-unused. Replaced the
+   Practice 9 log in this file with this one (it stays in git history). Pushed practice-10 and
+   opened the pull request into main with vovaskochko as the reviewer.
 
 
 What I took as-is, and what I changed
 -------------------------------------
-Taken as-is: src/optimizer.py, the changes to compiler.py, run_tests.sh and README.md, and the
-tests under tests/opt, as produced in the steps above, one commit per step.
+Taken as-is: tests/io, tests/ffi, the extern code in src/ (lexer, ast_nodes, parser, semantic,
+codegen, optimizer, ir_names), the new tests/ok, tests/err and tests/opt programs, and the
+changes to run_tests.sh, grammar.ebnf, README.md and the CI workflow, as produced above.
 
-Decisions the AI made where the PDF leaves a choice, which I kept: the pass lives in its own
-module, src/optimizer.py; the test-script option is both an argument (--remove-unused) and an
-environment variable (REMOVE_UNUSED=1); with the flag, the .ast-checked files of tests/ok are
-still compared without the pass; tests/opt programs must compile; a removed lambda's struct
-leaves program.lambda_structs; the extra task's rule replaces the Task 1 rule for
---remove-unused (no separate flag), since the PDF says --remove-unused does it.
+Decisions the AI made where the PDF leaves a choice, which I kept: tests/ffi is built by the
+same loop as tests/io; a type error on an extern parameter points at the type, not the name;
+the reserved C names include the generator's own globals (fmt_int, fmt_str, word_true,
+word_false) and fn_<name>, not only main, printf, scanf and member functions; extern inside a
+struct gets the same "'extern' is not allowed here"; an extern may stand before or after any
+fn.
 
-Mistakes the AI made and fixed: the lambda-inside-a-removed-function crash described in step 4,
-found by the AI, reproduced and fixed before the Task 3 commit. Two of its own throwaway test
-programs had syntax errors (an expression after exit, a struct after a function) and it
-corrected them; they were not my compiler's failures.
+Mistakes the AI made and fixed: three of its own test programs used `exit a + b`, which the
+language does not allow (exit takes a factor); it found them from the error output and moved
+the sum into a variable. While splitting the commits, its first attempt to edit README.md
+stopped on a mistyped match string and wrote nothing; it fixed the string and ran it again.
 
-Changed by me: the push and the pull request. I made no hand edits to the generated code; if I
+Changed by me: reflection.md, written by me. I made no hand edits to the generated code; if I
 change something later, it goes here.
 
-Checked by the AI and shown to me: the test runner after every step, both ways (240, 240, 250,
-255 passing), both warm-ups against the PDF, the chain's exit 4 and its two define lines, the
-round-by-round trace of the extra task's program, and the weakref measurement.
+Checked by the AI and shown to me: the test runner both ways (258, then 281 passing), the three
+points sessions on the binary, nm points.o and the two declare lines, nm geometry.o, the failed
+link without geometry.c, both geometry sessions, and every new error message.
+
+Checked by me:
