@@ -12,8 +12,12 @@
 # --remove-unused -- and both outputs must match NAME.expected: an optimization never changes
 # what a program prints. NAME.astc is the tree the pass leaves, --remove-unused --ast-checked.
 #
-# With --remove-unused (or REMOVE_UNUSED=1 in the environment) tests/ok and tests/err are
-# compiled through the pass too: every program must print the same, every error stay the same.
+# Last, every program in tests/io is built as a native binary and run on its sessions
+# (see that loop below).
+#
+# With --remove-unused (or REMOVE_UNUSED=1 in the environment) tests/ok, tests/err and
+# tests/io are compiled through the pass too: every program must print the same, every
+# error stay the same.
 # The .ast and .ast-checked dumps are the trees without it, so they are compared as before.
 #
 # Usage (with the llvmlite venv active):  ./run_tests.sh [--remove-unused]
@@ -119,6 +123,40 @@ for src in tests/opt/*.txt; do
 
     passed=$((passed + 1))
     echo "PASS  $name"
+done
+
+# Every program in tests/io is built as a native binary -- the compiler (with the flags),
+# llc and clang, as in full_compiler.sh -- and fed each of its sessions NAME.S.in; what the
+# binary prints must be exactly NAME.S.expected. The typed lines never reach the output.
+for src in tests/io/*.txt; do
+    [ -f "$src" ] || continue                   # an empty directory leaves the pattern itself
+    name=${src%.txt}
+    rm -f "$tmp/io.ll" "$tmp/io.o" "$tmp/io"
+    if ! python3 compiler.py "${flags[@]}" "$src" "$tmp/io.ll" 2>"$tmp/stderr" \
+        || ! llc -filetype=obj -relocation-model=pic "$tmp/io.ll" -o "$tmp/io.o" 2>>"$tmp/stderr" \
+        || ! clang -fPIE "$tmp/io.o" -o "$tmp/io" 2>>"$tmp/stderr"; then
+        fail "$name" "it does not build as a binary" "$(cat "$tmp/stderr")"
+        continue
+    fi
+    sessions=("$name".*.in)
+    if [ ! -f "${sessions[0]}" ]; then
+        fail "$name" "a program in tests/io needs at least one NAME.S.in session"
+        continue
+    fi
+    for input in "${sessions[@]}"; do
+        session=${input%.in}
+        if [ ! -f "$session.expected" ]; then
+            fail "$session" "no .expected file"
+            continue
+        fi
+        actual=$("$tmp/io" < "$input" 2>&1)
+        if [ "$actual" != "$(cat "$session.expected")" ]; then
+            fail "$session" "expected: $(cat "$session.expected")" "actual:   $actual"
+            continue
+        fi
+        passed=$((passed + 1))
+        echo "PASS  $session"
+    done
 done
 
 echo
