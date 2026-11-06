@@ -1,0 +1,3 @@
+extern fn printf := (i32 v) -> i32
+
+exit printf(1)

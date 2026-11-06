@@ -1,0 +1,19 @@
+Program
+  Fn say -> i32
+    Param a i32
+    Block
+      Print
+        Var a
+      Exit
+        Var a
+  Fn relay -> i32
+    Param a i32
+    Block
+      Exit
+        Call say
+          Var a
+  Decl loud i32 const
+    Call relay
+      Const 3
+  Exit
+    Const 0

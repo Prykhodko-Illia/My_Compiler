@@ -1,0 +1,3 @@
+extern fn odd := (i32 v) -> bool
+
+exit odd(3)

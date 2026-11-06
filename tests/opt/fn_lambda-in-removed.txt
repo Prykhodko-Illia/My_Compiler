@@ -1,0 +1,13 @@
+fn inner := (i32 a) -> i32
+{
+    exit a
+}
+fn outer := () -> i32
+{
+    fn f := [](i32 v) -> i32
+    {
+        exit inner(v)
+    }
+    exit f(1)
+}
+exit 3

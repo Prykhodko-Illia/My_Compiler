@@ -1,0 +1,13 @@
+extern fn abs := (i32 v) -> i32
+extern fn labs := (i64 v) -> i64
+extern fn llabs := (i64 v) -> i64
+
+fn quiet := (i32 v) -> i32
+{
+    i32 a{abs(v)}
+    exit v
+}
+
+i32 kept{abs(0 - 3)}
+i32 other{quiet(4)}
+exit llabs(0 - 9)
