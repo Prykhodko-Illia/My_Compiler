@@ -12,12 +12,12 @@
 # --remove-unused -- and both outputs must match NAME.expected: an optimization never changes
 # what a program prints. NAME.astc is the tree the pass leaves, --remove-unused --ast-checked.
 #
-# Last, every program in tests/io is built as a native binary and run on its sessions
-# (see that loop below).
+# Last, every program in tests/io and tests/ffi is built as a native binary and run on its
+# sessions (see that loop below).
 #
-# With --remove-unused (or REMOVE_UNUSED=1 in the environment) tests/ok, tests/err and
-# tests/io are compiled through the pass too: every program must print the same, every
-# error stay the same.
+# With --remove-unused (or REMOVE_UNUSED=1 in the environment) tests/ok, tests/err,
+# tests/io and tests/ffi are compiled through the pass too: every program must print the
+# same, every error stay the same.
 # The .ast and .ast-checked dumps are the trees without it, so they are compared as before.
 #
 # Usage (with the llvmlite venv active):  ./run_tests.sh [--remove-unused]
@@ -125,22 +125,26 @@ for src in tests/opt/*.txt; do
     echo "PASS  $name"
 done
 
-# Every program in tests/io is built as a native binary -- the compiler (with the flags),
-# llc and clang, as in full_compiler.sh -- and fed each of its sessions NAME.S.in; what the
-# binary prints must be exactly NAME.S.expected. The typed lines never reach the output.
-for src in tests/io/*.txt; do
+# Every program in tests/io and tests/ffi is built as a native binary -- the compiler (with
+# the flags), llc and clang, as in full_compiler.sh -- and fed each of its sessions
+# NAME.S.in; what the binary prints must be exactly NAME.S.expected. The typed lines never
+# reach the output. A program in tests/ffi declares extern functions, and its NAME.c, given
+# to clang with the object, holds the ones libc does not have.
+for src in tests/io/*.txt tests/ffi/*.txt; do
     [ -f "$src" ] || continue                   # an empty directory leaves the pattern itself
     name=${src%.txt}
+    c_files=()
+    [ -f "$name.c" ] && c_files=("$name.c")
     rm -f "$tmp/io.ll" "$tmp/io.o" "$tmp/io"
     if ! python3 compiler.py "${flags[@]}" "$src" "$tmp/io.ll" 2>"$tmp/stderr" \
         || ! llc -filetype=obj -relocation-model=pic "$tmp/io.ll" -o "$tmp/io.o" 2>>"$tmp/stderr" \
-        || ! clang -fPIE "$tmp/io.o" -o "$tmp/io" 2>>"$tmp/stderr"; then
+        || ! clang -fPIE "$tmp/io.o" "${c_files[@]}" -o "$tmp/io" 2>>"$tmp/stderr"; then
         fail "$name" "it does not build as a binary" "$(cat "$tmp/stderr")"
         continue
     fi
     sessions=("$name".*.in)
     if [ ! -f "${sessions[0]}" ]; then
-        fail "$name" "a program in tests/io needs at least one NAME.S.in session"
+        fail "$name" "a program in tests/io or tests/ffi needs at least one NAME.S.in session"
         continue
     fi
     for input in "${sessions[@]}"; do

@@ -1,0 +1,26 @@
+Program
+  ExternFn abs -> i32
+    Param v i32
+  ExternFn llabs -> i64
+    Param v i64
+  Fn quiet -> i32
+    Param v i32
+    Block
+      Decl a i32 const
+        Call abs
+          Var v
+      Exit
+        Var v
+  Decl kept i32 const
+    Call abs
+      BinOp -
+        Const 0
+        Const 3
+  Decl other i32 const
+    Call quiet
+      Const 4
+  Exit
+    Call llabs
+      BinOp -
+        Const 0
+        Const 9
