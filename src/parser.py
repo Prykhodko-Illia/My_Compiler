@@ -2,10 +2,11 @@
 
 Recursive descent, written by hand: one method per rule of grammar.ebnf.
 
-  program   ::= { struct } { fn } { statement } exit
+  program   ::= { struct } { fn | extern } { statement } exit
   struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
   field_decl::= type [ "mut" ] ident NL
   fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
+  extern    ::= "extern" "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL
   statement ::= decl | assign | if | while | print | lambda
   lambda    ::= "fn" ident ":=" "[" [ capture { "," capture } ] "]"
                 "(" [ type ident { "," type ident } ] ")" "->" type NL block
@@ -60,7 +61,7 @@ tree.
 """
 
 from .ast_nodes import (AssignNode, BinOpNode, BlockNode, BoolNode, CallNode, Capture, ConstNode,
-                        DeclNode, ExitNode, FieldNode, FnNode, IfNode, InitNode, LambdaNode, Link, MemberCallNode,
+                        DeclNode, ExitNode, ExternFnNode, FieldNode, FnNode, IfNode, InitNode, LambdaNode, Link, MemberCallNode,
                         MemberFnNode, MemberNode, NotNode, ParamNode, PrintNode, ProgramNode, ReadNode,
                         ResultFieldNode, StringNode, StructNode, VarNode, WhileNode)
 from .errors import CompileError
@@ -146,9 +147,11 @@ class Parser:
             self.next_line()
             structs.append(self.parse_struct())
         # A lambda is a statement: the first one ends the functions, as any statement does.
-        while is_token(self.peek_line(), "keyword", "definition", "fn") and not self.lambda_ahead():
+        # An extern stands among the functions, in any order with them.
+        while ((is_token(self.peek_line(), "keyword", "definition", "fn") and not self.lambda_ahead())
+               or is_token(self.peek_line(), "keyword", "linkage")):
             self.next_line()
-            fns.append(self.parse_fn())
+            fns.append(self.parse_extern() if self.at("keyword", "linkage") else self.parse_fn())
         statements, exit_node = self.parse_lines(None)
         if exit_node is None:
             raise CompileError(self.end[0], self.end[1], "program has no exit statement")
@@ -174,6 +177,8 @@ class Parser:
             if self.peek_line() is None:
                 raise self.error("'{' is never closed", brace)
             self.next_line()
+            if self.at("keyword", "linkage"):
+                raise self.error("'extern' is not allowed here")
             if self.at("keyword", "definition", "fn"):
                 if not fields:
                     raise self.error(f"a member function before the first field of struct '{name.text}': "
@@ -249,6 +254,30 @@ class Parser:
     def parse_signature(self, name):
         """ "(" [ type ident { "," type ident } ] ")" "->" type NL block -- what a function,
         a member function and a lambda all have after the name, and after the captures."""
+        params, result = self.parse_params_and_result()
+        body = self.parse_block(f"'fn {name.text}'")
+        if body.exit is None:
+            raise CompileError(*body.close, f"the body of '{name.text}' must end with exit")
+        return params, result, body
+
+    def parse_extern(self):
+        """extern ::= "extern" "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL
+
+        A signature and no body: the body is in C. A '{' on the next line is the body a
+        C function cannot have here."""
+        self.eat()                                             # extern
+        if not self.at("keyword", "definition", "fn"):
+            raise self.error(f"expected 'fn' after 'extern', found {describe(self.peek())}")
+        self.eat()                                             # fn
+        name = self.expect("identifier", None, "a function name")
+        self.expect("operator", "assign", f"':=' after 'extern fn {name.text}'")
+        params, result = self.parse_params_and_result()
+        if is_token(self.peek_line(), "block", "start"):
+            raise self.error(f"extern function '{name.text}' has no body: it is defined in C", self.peek_line())
+        return ExternFnNode(name.line, name.col, name.text, params, result.text, (result.line, result.col))
+
+    def parse_params_and_result(self):
+        """ "(" [ type ident { "," type ident } ] ")" "->" type NL -- the rest of the signature line."""
         self.expect("separator", "open", "'(' before the parameters")
         params = []
         if not self.at("separator", "close"):
@@ -260,10 +289,7 @@ class Parser:
         self.expect("operator", "arrow", "'->' and the result type")
         result = self.parse_type("the result type")
         self.end_line("the result type")                       # fn f := () -> i32 {  -- its own line
-        body = self.parse_block(f"'fn {name.text}'")
-        if body.exit is None:
-            raise CompileError(*body.close, f"the body of '{name.text}' must end with exit")
-        return params, result, body
+        return params, result
 
     def parse_param(self):
         """type ident"""
@@ -307,10 +333,13 @@ class Parser:
                 exit_node = self.parse_exit()
                 self.end_line("the statement")
             else:
-                statements.append(self.parse_statement())
+                statements.append(self.parse_statement(top=brace is None))
 
-    def parse_statement(self):
-        """statement ::= decl | assign | if | while | print | lambda"""
+    def parse_statement(self, top=False):
+        """statement ::= decl | assign | if | while | print | lambda
+
+        `top`: the line stands among the program's statements, not in a block -- only to
+        say why an extern is wrong there."""
         if self.at("keyword", "branch", "if"):
             return self.parse_if()                             # it reads its own lines
         if self.at("keyword", "loop"):
@@ -332,8 +361,10 @@ class Parser:
             node = self.parse_assign()
         elif self.at("keyword", "definition", "struct"):
             raise self.error("a struct is declared at the top of the program, before every function and statement")
-        elif self.at("keyword", "definition", "fn"):
+        elif self.at("keyword", "definition", "fn") or (top and self.at("keyword", "linkage")):
             raise self.error("a function is declared at the top level, after the structs and before every statement")
+        elif self.at("keyword", "linkage"):
+            raise self.error("'extern' is not allowed here")
         elif self.at("keyword", "branch", "else"):
             raise self.error("'else' without an 'if'")
         elif self.at("block", "start"):

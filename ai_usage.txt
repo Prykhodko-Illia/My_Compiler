@@ -1,187 +1,126 @@
-AI usage log - Practice 8 (callable objects and lambdas)
-========================================================
+AI usage log - Practice 10 (a real program as a binary, and extern fn: calling C)
+=================================================================================
 
 Tool:    Claude Code (Claude desktop app, Code tab)
-Model:   Claude Opus 5.5 (claude-opus-5-5), one new session (prompts 1-6); a second, separate
-         session checked the result (prompts 7-8)
-Date:    2026-10-26
-Setup:   The AI edited files in ~/Study/compilers and ran the compiler, the tests and lli on my
-         Multipass VM (noble-compilers) with `multipass exec`, where the repository is mounted at
-         ~/compilers. On my request it created the practice-8 branch from main; it made the
-         commits on its own, one per task, under my git user, with no AI co-author line. Pushing
-         the branch and opening the pull request are mine.
+Model:   Claude Opus 5.5 (claude-opus-5-5), one session (prompts 1-4)
+Date:    2026-11-06
+Setup:   The AI edited files in ~/Study/compilers and ran the compiler, llc, clang, lli, nm and
+         the tests on my Multipass VM (noble-compilers) with `multipass exec`, where the
+         repository is mounted at ~/compilers. On my request it created the practice-10 branch
+         from practice-9 (not yet merged into main), made the commits under my git user with no
+         AI co-author line, pushed the branch and opened the pull request.
 
-Below is every prompt I sent about Practice 8, quoted as written (in Ukrainian), with an English
-translation, followed by what the AI did.
+reflection.md (Task 2) is mine: written by me, without an AI tool. The AI did not draft,
+edit or review it.
+
+Below is every prompt I sent about Practice 10, quoted as written, followed by what the AI did.
 
 
 1. Prompt:
-   [attached w08-practice.pdf]
-   "Привіт давай перейдемо тепер до практики номер 8, поясни мені, що тут потрібно зробити і
-   потім перейдемо до плану"
-   (Hi, let's move on to practice number 8 now, explain to me what has to be done here, and then
-   we'll move on to the plan.)
+   [attached CS400_Practice_10.pdf]
+   "look at this task and tell me what I should do here"
 
    What the AI did:
-   Its PDF reader could not render the file (pdftoppm is not installed on my Mac), so it took the
-   text out with a short Swift script using PDFKit, in its scratch folder, and put the examples
-   back together from the two-column layout. Looked at the structure of the repository and wrote
-   no code. Explained the three tasks and the additional one: an object with a member function
-   call is callable, the call rule (a visible variable, then a function, an error for both), the
-   rewrite into a member call in the semantic pass, lambdas with copies of their captures, what a
-   lambda body may see, the rewrite into a struct lambda.NAME, its member function call and a
-   variable, the new --ast-checked flag, the errors with their positions, the tests, and mut
-   captures. Listed what has to be shown at the defence.
+   Its PDF reader could not render the file (pdftoppm is not installed on my Mac), so it took
+   the text out with a short Swift script using PDFKit, in its scratch folder. Looked at
+   full_compiler.sh, run_tests.sh and the struct printer in src/codegen.py, and wrote no code.
+   Explained the warm-up, Task 1 (the points binary and the three tests/io sessions), Task 2
+   (the reflection, which has to be my own text), the extern additional task, the submission
+   and the rules that give 0. Pointed out that print_struct already walks the field table, so
+   nothing names Point, and that practice-9 is not merged into main.
 
 
 2. Prompt:
-   "Так, давай складемо план реалізації Практики 8"
-   (Yes, let's make the implementation plan for Practice 8.)
+   "let's create branch for the practice-10 from the practice-9
 
-   What the AI did:
-   Read every source file and wrote the plan file by file, with the decisions for the hard
-   spots: a CallNode / MemberCallNode keeps a `callable` field that holds the new
-   CallableCallNode, and --ast-checked and the generator go through it, instead of rewriting
-   every parent of an expression; the struct of each lambda goes into a list of its own on the
-   ProgramNode (program.lambda_structs), so the generator builds it with the program's structs
-   and it is not printed twice; two lambdas with one name in two scopes get distinct struct
-   names; a lambda body is checked as the member function call of its struct, so its captures
-   are the fields of its object, and what stood around it is kept on a stack only to report "not
-   captured". Proposed to keep add_k.call(5) legal, since that is what add_k(5) becomes, and
-   asked me to say if I wanted it to be an error.
+   and start doing it"
+
+   What the AI did (Task 1):
+   Created practice-10 from practice-9. Wrote tests/io/points.txt (the program from the PDF)
+   and the three sessions: points.sheet (3 4, 1 1, 0 5 with 25 -> 2 matches), points.none (the
+   same points with 7 -> 0) and points.all (-3 4, 4 -3, 5 0 with 25 -> 3), each NAME.S.in with
+   seven numbers and NAME.S.expected with the prompts and results only. Built the binary with
+   the three commands of the PDF and diffed all three sessions before touching the script. No
+   compiler change was needed. Then added a loop to run_tests.sh: every tests/io/NAME.txt is
+   built with the compiler (with the flags), llc -relocation-model=pic and clang -fPIE, and
+   every NAME.S.in is fed to the binary; the output must be exactly NAME.S.expected. Checked
+   that a wrong session is reported as FAIL with a throwaway session it deleted afterwards. 258
+   passing, with and without --remove-unused. nm points.o: T Point_d2, T fn_report, T main,
+   U printf, U scanf; points.ll has the two declare lines.
 
 
 3. Prompt:
-   "Так, створи гілку practice-8 від main і почни реалізацію з Task 1"
-   (Yes, create the practice-8 branch from main and start the implementation with Task 1.)
+   "Yes, do extern"
 
-   What the AI did (Task 1 - callable objects):
-   Created the practice-8 branch. Tree: CallableCallNode (a MemberCallNode with the name call
-   and the object as written, for messages) and the `callable` field. Semantic pass: visit_call
-   follows the rule of the PDF - a visible variable is an object to call, otherwise a member
-   function of the same struct, then a global function; a name that is both is an error at the
-   call; obj.name(args) where name is a field of obj becomes obj.name.call(args), a field of a
-   call result included, without checking the result twice. Messages for an object without call,
-   a call on an i32, the wrong arguments (named after the object) and a mutating call through a
-   const link. Generator: two lines, which emit the member call in place of the call. Checked the
-   PDF's program through lli (42, 42, 14, 10, Counter{n: 2}, 12) and that triple(14) and
-   triple.call(14) give the same call line in output.ll. Added 2 ok and 9 err programs. 211 tests
-   passing. Committed as "Task 1: ...".
+   What the AI did (additional task - extern fn):
+   - lexer: `extern` is a keyword (sub "linkage").
+   - ast_nodes: ExternFnNode, a FnNode with no body, its own visit_extern_fn.
+   - parser: parse_extern, among the fn declarations in any order with them; the rest of the
+     signature line is shared with fn (parse_params_and_result). Errors: a '{' on the line
+     after it ("extern function 'twice' has no body: it is defined in C"), extern in a block,
+     a function body or a struct ("'extern' is not allowed here"), extern after the statements
+     (the same message as for fn), extern without fn.
+   - semantic: externs share the function table, so a name declared twice gives the fn
+     message. check_extern: only i32 and i64 parameters and results, with the PDF's messages;
+     the C name may not be one the module already uses - main, printf, scanf, the generator's
+     global strings, fn_<name> of the program's own functions, Struct_method of a member
+     function. Those IR names moved to a new src/ir_names.py, which codegen and the checker
+     both use, so the check cannot drift from what codegen emits.
+   - codegen: an extern is declared under its own C name, before the member functions and the
+     strings take theirs; no body.
+   - optimizer: an extern is counted like a global function (no calls -> removed) and is always
+     "with an effect", so a call of one is never dropped.
+   - tests: tests/ffi/geometry.txt with geometry.c and two sessions (-3 4 -> 7, result 5;
+     2 3 -> 5, result 3); run_tests.sh builds tests/ffi like tests/io and links NAME.c;
+     tests/ok/extern_libc (abs and llabs from the statements, a function and a member function,
+     under lli); 19 tests/err (the nine the PDF lists plus main, scanf, an fn_ name, extern in a
+     struct and in a function body, declared twice, the same name as a fn, a missing fn, the
+     wrong number of arguments, an i64 into an i32 parameter); tests/opt/extern_unused (an
+     unused extern removed, declarations calling one kept).
+   - grammar.ebnf and the docstrings updated.
+   Checked by hand: nm geometry.o shows U abs and U isqrt next to U printf and U scanf, the link
+   fails without geometry.c ("undefined reference to `isqrt'"), and both geometry sessions
+   print what the PDF says. Every error message was read before it became a .expected file.
+   281 passing, with and without --remove-unused.
 
 
 4. Prompt:
-   "Так, переходь до Task 2 — лямбди"
-   (Yes, go on to Task 2 - lambdas.)
-
-   What the AI did (Task 2 - lambdas):
-   Lexer: '[' and ']' as tokens. Tree: Capture and LambdaNode, which prints itself as written
-   before the semantic pass and as its struct and declaration after it. Parser: a line that
-   starts with fn NAME := [ is a lambda, in any block and right after the functions; a capture
-   list on a member function is an error; parse_fn and parse_lambda share the signature part.
-   Semantic pass: visit_lambda checks the captures (twice, not visible), the parameters (named
-   like a capture), builds the struct lambda.NAME with one const field per capture and its
-   member function call, checks the body as that member function with what stood around it on a
-   stack, and declares the variable only after the body. New errors: a name used without a
-   capture, an assignment to a capture, a lambda calling itself, and a lambda passed as an
-   argument, as the value of exit, in a declaration, in an assignment, in print, or read from
-   outside (add_k.k). visit_fn now restores the function around it, since a lambda body is
-   checked inside another body. Generator: the lambda structs are built with the program's, and
-   a lambda is the declaration of its variable. compiler.py: --ast-checked. run_tests.sh: a
-   NAME.ast-checked file is compared too. Updated grammar.ebnf. Checked the PDF's program through
-   lli (15, 100, 50, 11), its --ast-checked against the PDF, %"lambda.add_k" and
-   @"lambda.add_k_call" in output.ll, and every error of the PDF made from that program with the
-   same line:column as the PDF (19:11, 19:5, 17:17, 8:26, 13:14). Added 6 ok programs (one with
-   its .ast-checked) and 15 err programs. 232 tests passing. Committed as "Task 2: ...".
-
-
-5. Prompt:
-   "Так, переходь до додаткового завдання — mut captures"
-   (Yes, go on to the additional task - mut captures.)
-
-   What the AI did (additional task - mut captures):
-   Parser: capture ::= [ "mut" ] ident. Semantic pass: the field of a mut capture is mut, and
-   the variable of a lambda is mut when one of its captures is; the rest came from the code that
-   already existed - an assignment to a field marks call as mutating, a call of a mut captured
-   lambda passes it on, and a const copy is refused by the mutation rule of Task 1. Checked the
-   PDF's program (1, 2, 34, 3, 0) and the error of the PDF with [next] at 11:11. Added 5 ok
-   programs (the PDF's, a counter and a fresh copy in a loop, two lambdas with their own copies
-   of one variable, a const and a mut capture in one list, a lambda with a mut capture in a member
-   function) and 3 err programs. 240 tests passing. Committed as "Additional task: mut captures".
-
-
-6. Prompt:
-   "Так, онови README і ai_usage.txt для Практики 8"
-   (Yes, update README and ai_usage.txt for Practice 8.)
+   "commit, reflection is on me, do everything else"
 
    What the AI did:
-   README: callable objects and lambdas in the introduction and the language section (with the
-   PDF's programs), --ast-checked, NAME.ast-checked in the test runner, the new errors, the new
-   nodes and how each phase handles the two features. Replaced the Practice 7 log in this file
-   with this one; the Practice 7 log is still in git history (merged into main). Committed both.
-
-
-7. Prompt (review session):
-   [attached w08-practice.pdf]
-   "тепер зроби таку ж перевірку для завдання 8"
-   (Now do the same check for task 8.)
-
-   What the AI did:
-   Read the PDF and checked the four practice-8 commits against it without changing any code.
-   Ran the test runner in the VM (240 passing). Rebuilt the PDF's three programs with a 4-space
-   indent, which the line:column of every PDF error matches, and ran them: the Task 1 output
-   (42, 42, 14, 10, Counter{n: 2}, 12), the Task 2 output (15, 100, 50, 11; also as a native
-   binary) and the mut-captures output (1, 2, 34, 3, 0). Made the PDF's one-change variants of
-   those programs and got every error at the PDF's position (19:11, 19:5, 17:17, 8:26, 13:14,
-   11:11), plus the rest of the list: a lambda in exit, in a declaration, in an assignment and in
-   print, a parameter named like a capture, a lambda calling itself, add_k.k, fn without [ in a
-   block, a capture list on a member function, and every Task 1 error. Ran about 25 edge cases
-   of its own: a capture taken anew on every loop iteration, a struct capture being a copy, a
-   lambda in a lambda, in a member function capturing a field and in if / while, a lambda
-   capturing a lambda, a callable parameter, two mut copies of one variable, the original never
-   changing. Compared --ast (the parse tree, Call add_k) and --ast-checked (the PDF's tree line
-   for line), and read the IR: triple(14) and triple.call(14) as the same call of Scale_call,
-   lambda.add_k as {i32}, lambda.add_k_call with this first, and an alloca, a gep and a store per
-   capture. Mapped every test the PDF lists for Task 3 and the additional task to an existing one,
-   and checked that run_tests.sh compares NAME.ast-checked. Reported every requirement as met;
-   flagged that this file ends with an empty "Checked by me" line and that practice-8 was not
-   pushed and had no pull request. A few of its own test files were wrong (one named as an error
-   but valid by the PDF's rules, one with a stray line); it said so rather than count them as
-   failures of my compiler.
-
-
-8. Prompt (review session):
-   "так, додай перевірку в ai_usage.txt і закоміть"
-   (Yes, add the check to ai_usage.txt and commit.)
-
-   What the AI did:
-   Added entries 7-8 to this file and committed it under my git user with no AI co-author line.
-   It left the "Checked by me" line for me to write.
+   Two commits: "Task 1: ..." (tests/io and its run_tests.sh loop) and "Additional task: ..."
+   (extern and its tests). README: the Practice 10 line in the intro, tests/io and tests/ffi in
+   the tests section, a "Calling C" section in the language, the extern errors in the table,
+   ir_names.py and the new folders in the repo map, the extern declare in how-it-works. CI
+   (.github/workflows/tests.yml) now also runs ./run_tests.sh --remove-unused. Replaced the
+   Practice 9 log in this file with this one (it stays in git history). Pushed practice-10 and
+   opened the pull request into main with vovaskochko as the reviewer.
 
 
 What I took as-is, and what I changed
 -------------------------------------
-Taken as-is: the changes to src/lexer.py, src/parser.py, src/ast_nodes.py, src/semantic.py,
-src/codegen.py, compiler.py, run_tests.sh, grammar.ebnf, README.md, and the new tests under
-tests/ok and tests/err, as produced in the steps above, one commit per step.
+Taken as-is: tests/io, tests/ffi, the extern code in src/ (lexer, ast_nodes, parser, semantic,
+codegen, optimizer, ir_names), the new tests/ok, tests/err and tests/opt programs, and the
+changes to run_tests.sh, grammar.ebnf, README.md and the CI workflow, as produced above.
 
-Decisions the AI made where the PDF leaves a choice, which I kept: the `callable` field instead
-of replacing the node in its parent; add_k.call(5) stays legal; a second lambda with the same name
-in another scope gets the struct lambda.NAME.2; the wording of every error message; a lambda
-inside a member function goes into the same fixpoint as the member functions for the mutation
-rule; a fn without '[' inside a block keeps the error message it had before.
+Decisions the AI made where the PDF leaves a choice, which I kept: tests/ffi is built by the
+same loop as tests/io; a type error on an extern parameter points at the type, not the name;
+the reserved C names include the generator's own globals (fmt_int, fmt_str, word_true,
+word_false) and fn_<name>, not only main, printf, scanf and member functions; extern inside a
+struct gets the same "'extern' is not allowed here"; an extern may stand before or after any
+fn.
 
-Mistakes the AI made and fixed: in its first version of the "the capture is const" message, the
-check would also have fired for a const field of a local struct variable in a lambda body; it
-noticed this while writing it and added the condition that the name is a field of the lambda's
-own object, before any test ran.
+Mistakes the AI made and fixed: three of its own test programs used `exit a + b`, which the
+language does not allow (exit takes a factor); it found them from the error output and moved
+the sum into a variable. While splitting the commits, its first attempt to edit README.md
+stopped on a mistyped match string and wrote nothing; it fixed the string and ran it again.
 
-Changed by me: the push and the pull request. I made no hand edits to the generated code; if I
+Changed by me: reflection.md, written by me. I made no hand edits to the generated code; if I
 change something later, it goes here.
 
-Checked by the AI and shown to me: the test runner after every step (211, 232, 240 passing, all
-earlier programs included), the three programs of the PDF through lli, --ast-checked of the Task 2
-program against the PDF, lambda.add_k and lambda.add_k_call in output.ll, and the rejected programs
-with their line:column.
+Checked by the AI and shown to me: the test runner both ways (258, then 281 passing), the three
+points sessions on the binary, nm points.o and the two declare lines, nm geometry.o, the failed
+link without geometry.c, both geometry sessions, and every new error message.
 
 Checked by me:
-Tests were compared and conducted along with AI, Second agent was configured to check the corectness
+Verifying by looking at the new tests and running them. Checking that all requirements of the task are fullfilled step by step by looking on the changes.

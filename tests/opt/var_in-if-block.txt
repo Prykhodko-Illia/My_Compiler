@@ -1,0 +1,14 @@
+i32 mut total{0}
+i32 i{3}
+if i != 0
+{
+    i32 unused{i + 1}
+    i32 step{2}
+    total := total + step
+}
+else
+{
+    i32 other{5}
+}
+print(total)
+exit total

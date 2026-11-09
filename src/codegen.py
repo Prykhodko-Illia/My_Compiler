@@ -66,6 +66,10 @@ function needs an address, so a result it is called on -- p.moved(1).shift(2) --
 stored into a temporary slot first, and that slot is `this`: a mutating function changes
 the copy, which nobody sees again.
 
+An extern function is a declaration under its own C name -- declare i32 @"abs"(i32 %".1")
+-- with no body; a call of it is a call like any other, and the linker finds the body in
+libc or in a C file given to clang.
+
 print is printf, the same declaration exit uses, with a format by type: "%d\n" for an
 i32, "%lld\n" for an i64, "%s\n" for a bool (a select between the global strings "true"
 and "false") and for a string literal, whose text goes in as the argument so a % in it
@@ -90,7 +94,8 @@ registers (opt -passes=mem2reg).
 from llvmlite import ir
 import llvmlite.binding as llvm
 
-from .ast_nodes import FieldNode, MemberFnNode, StringNode, VarNode, chain
+from .ast_nodes import ExternFnNode, FieldNode, MemberFnNode, StringNode, VarNode, chain
+from .ir_names import fn_name, member_name
 from .semantic import wider
 
 I1, I8, I32, I64 = ir.IntType(1), ir.IntType(8), ir.IntType(32), ir.IntType(64)
@@ -100,8 +105,6 @@ LLVM_TYPE = {"i32": I32, "i64": I64, "bool": I1}     # the structs join it per m
 I8_PTR = ir.PointerType(I8)
 
 FORMAT = {"i32": b"%d", "i64": b"%lld"}             # what print uses for each integer type
-
-FN_PREFIX = "fn_"                 # fn main := ... becomes @fn_main, not a second @main
 
 
 class CodeGen:
@@ -209,15 +212,18 @@ class CodeGen:
         structs = [*node.structs, *node.lambda_structs]
         for struct in structs:
             struct.accept(self)
-        for fn in node.fns:                                      # every signature first...
-            self.fns[fn] = self.declare(fn, [], FN_PREFIX + fn.name)
+        # Every signature first. An extern is a declaration under its own C name, made
+        # before the member functions and the strings take theirs: the checker has refused
+        # every name already in use, so it never gets a suffix.
+        for fn in node.fns:
+            self.fns[fn] = self.declare(fn, [], fn.name if isinstance(fn, ExternFnNode) else fn_name(fn.name))
         for struct in structs:
             this_type = self.types[struct.name].as_pointer()     # the object, by address
             for method in struct.methods:
                 # Names may contain '_': A.b_c and A_b.c both make A_b_c, and struct fmt's
                 # int would be the global fmt_int. The first one keeps the name, a later
                 # one gets a suffix -- the program's own functions are declared above.
-                name = self.module.get_unique_name(f"{struct.name}_{method.name}")
+                name = self.module.get_unique_name(member_name(struct.name, method.name))
                 self.fns[method] = self.declare(method, [this_type], name)
         for struct in structs:                                   # ...then the bodies
             for method in struct.methods:
@@ -239,6 +245,9 @@ class CodeGen:
 
     def visit_fn(self, node):
         self.build_body(node, self.fns[node].args)
+
+    def visit_extern_fn(self, node):
+        pass                              # a declare and no body: the linker finds it in C
 
     def visit_member_fn(self, node):
         this, *args = self.fns[node].args
