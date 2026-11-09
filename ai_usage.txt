@@ -123,3 +123,4 @@ points sessions on the binary, nm points.o and the two declare lines, nm geometr
 link without geometry.c, both geometry sessions, and every new error message.
 
 Checked by me:
+Verifying by looking at the new tests and running them. Checking that all requirements of the task are fullfilled step by step by looking on the changes.
