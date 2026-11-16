@@ -1,0 +1,23 @@
+fn ping := (i32 a) -> i32
+{
+    exit pong(a)
+}
+fn pong := (i32 a) -> i32
+{
+    exit ping(a)
+}
+fn fact := (i32 n) -> i32
+{
+    i32 mut r{1}
+    if n != 0
+    {
+        i32 rest{fact(n - 1)}
+        r := n * rest
+    }
+    exit r
+}
+fn never := () -> i32
+{
+    exit 0
+}
+exit fact(5)

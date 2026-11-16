@@ -1,0 +1,8 @@
+i32 mut k{0}
+i32 mut n{0}
+while n != 3
+{
+    k := k + 1
+    n := n + 1
+}
+exit n

@@ -1,0 +1,34 @@
+Program
+  Fn square -> i32
+    Param a i32
+    Block
+      Decl r i32 const
+        BinOp *
+          Var a
+          Var a
+      Exit
+        Var r
+  Decl sum i32 mut
+    Const 0
+  Decl i i32 mut
+    Const 1
+  While
+    BinOp !=
+      Var i
+      Const 4
+    Block
+      Decl sq i32 const
+        Call square
+          Var i
+      Assign sum
+        BinOp +
+          Var sum
+          Var sq
+      Assign i
+        BinOp +
+          Var i
+          Const 1
+  Print
+    Var sum
+  Exit
+    Var sum

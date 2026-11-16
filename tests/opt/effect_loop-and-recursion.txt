@@ -1,0 +1,23 @@
+fn spin := (i32 a) -> i32
+{
+    i32 mut i{0}
+    while i != a
+    {
+        i := i + 1
+    }
+    exit i
+}
+fn fact := (i32 n) -> i32
+{
+    i32 mut r{1}
+    if n != 0
+    {
+        i32 rest{fact(n - 1)}
+        r := n * rest
+    }
+    exit r
+}
+i32 s{spin(3)}
+i32 f{fact(4)}
+print(1)
+exit 0
