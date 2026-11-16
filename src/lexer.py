@@ -30,7 +30,7 @@ class Token:
     text: str
     line: int
     col: int         # 1-based position of the token's first byte
-    sub: str = ""    # typename | specifier | statement | branch | loop | definition | boolean | builtin
+    sub: str = ""    # typename | specifier | statement | branch | loop | definition | linkage | boolean | builtin
                      # numeric | start | end | assign | plus | minus | times | eq | ne | not
                      # dot | arrow | comma | open | close | capture_open | capture_close
 
@@ -53,6 +53,7 @@ KEYWORDS = {
     b"while": "loop",
     b"struct": "definition",
     b"fn": "definition",
+    b"extern": "linkage",            # extern fn abs := (i32 v) -> i32 -- defined in C
     b"true": "boolean",
     b"false": "boolean",
     b"read": "builtin",              # read() -- a value

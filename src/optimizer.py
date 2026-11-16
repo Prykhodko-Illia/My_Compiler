@@ -17,6 +17,7 @@ assignment then stays, and so must the slot it writes. A function has an effect 
   * it is a mutating member function: it changes the object it is called on;
   * it may not return: its body has a while, or it calls itself, directly or through
     other functions -- a call that never returns is observable, the program hangs;
+  * it is an extern function: its body is in C, where it may print;
   * it calls a function that has an effect.
 The last rule goes round when functions call each other, so the set is a fixpoint: the
 first three rules, then every caller of a function in the set, until nothing is added.
@@ -42,15 +43,16 @@ side reads it. Counting cannot see that the read only serves the write.
 
 Global functions are counted the same way, one level up: every call of one, wherever it
 stands -- in the statements, in another function, in a member function, in a lambda
-body. A function with no calls is removed with its whole body, every declaration and call
+body. An extern function is counted the same way: with no calls its declaration goes.
+A function with no calls is removed with its whole body, every declaration and call
 inside it in one cut, and the next round no longer sees those calls: the removed body may
 have held the only call of another function. Member functions and lambdas stay. Two
 functions that call only each other, or one that only calls itself, never reach zero and
 stay too -- the reason reference counting cannot free a cycle.
 """
 
-from .ast_nodes import (AssignNode, CallableCallNode, CallNode, DeclNode, IfNode, LambdaNode, MemberCallNode,
-                        PrintNode, ReadNode, WhileNode)
+from .ast_nodes import (AssignNode, CallableCallNode, CallNode, DeclNode, ExternFnNode, IfNode, LambdaNode,
+                        MemberCallNode, PrintNode, ReadNode, WhileNode)
 
 
 class Facts:
@@ -89,7 +91,8 @@ def effectful_functions(program):
     facts = {}
     for fn in fns:
         facts[id(fn)] = Facts()
-        facts[id(fn)].scan(fn.body)
+        if fn.body is not None:           # an extern has none here
+            facts[id(fn)].scan(fn.body)
 
     def calls_itself(start):
         seen, todo = set(), list(facts[start].callees)
@@ -104,7 +107,7 @@ def effectful_functions(program):
 
     effect = {id(fn) for fn in fns
               if facts[id(fn)].io or facts[id(fn)].loops or getattr(fn, "mutating", False)
-              or calls_itself(id(fn))}
+              or isinstance(fn, ExternFnNode) or calls_itself(id(fn))}
     changed = True
     while changed:                        # add the callers, until a pass adds nothing
         changed = False
@@ -163,6 +166,9 @@ class UseCounter:
 
     def visit_member_fn(self, node):      # never removed: not counted, only walked
         node.body.accept(self)
+
+    def visit_extern_fn(self, node):      # counted like a global function, no body to walk
+        self.calls.setdefault(id(node), 0)
 
     # -- statements ------------------------------------------------------------
 
@@ -279,7 +285,8 @@ class Pruner:
             for method in struct.methods:
                 self.prune_block(method.body)
         for fn in program.fns:
-            self.prune_block(fn.body)
+            if fn.body is not None:       # an extern has nothing to prune
+                self.prune_block(fn.body)
         program.statements = self.prune_statements(program.statements)
         program.lambda_structs = [struct for struct in program.lambda_structs if id(struct) in self.live_lambdas]
 

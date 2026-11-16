@@ -31,6 +31,10 @@ jobs:
       - name: Run the tests
         run: ./run_tests.sh
 
+      # The same suite through --remove-unused: every program must print the same.
+      - name: Run the tests with --remove-unused
+        run: ./run_tests.sh --remove-unused
+
       # The whole chain down to a native binary: compiler.py + llc + clang + run.
       - name: Build and run a native binary
         run: |

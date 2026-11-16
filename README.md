@@ -30,6 +30,9 @@ Since Practice 8 an object whose struct declares `call` is **callable** (`triple
 **lambda** — a function declared where a statement stands, with copies of the variables it names in `[...]` — can
 sit in any block. Both are sugar: the semantic pass turns them into a struct, a member function and a member call,
 which the rest of the compiler already knew how to build.
+Since Practice 10 a program can call **C**: `extern fn abs := (i32 v) -> i32` declares a function whose body is
+in libc or in a C file of your own, and the linker finds it. And the compiler is checked the way a person would use
+it — a program built down to a native binary and driven through the terminal, one session at a time.
 
 The grammar the parser follows is written down in [`grammar.ebnf`](grammar.ebnf).
 Nothing reaches the builder until the pass has approved the whole program.
@@ -223,12 +226,20 @@ Every program lives in one of two folders, and `NAME.expected` next to it holds 
   no output file was left behind.
 - If a `NAME.ast` file sits next to a program, the `--ast` dump must match it as well; a `NAME.ast-checked`
   file does the same for `--ast-checked`.
+- `tests/io/NAME.txt` is built as a **native binary** — the compiler, `llc -relocation-model=pic`, `clang -fPIE`,
+  as in `full_compiler.sh` — and fed every session `NAME.S.in` of it (`S` is any name). What the binary prints
+  must be exactly `NAME.S.expected`. The typed lines go to the program and never reach the screen, so a
+  `.expected` holds the prompts and the results only: `points.sheet`, `points.none` and `points.all` are three
+  sessions of [`tests/io/points.txt`](tests/io/points.txt).
+- `tests/ffi/NAME.txt` is the same, for a program with `extern` functions: its `NAME.c`, when there is one, goes
+  to `clang` with the object and holds the C bodies libc doesn't have
+  ([`tests/ffi/geometry.txt`](tests/ffi/geometry.txt) and [`geometry.c`](tests/ffi/geometry.c)).
 - `tests/opt/NAME.txt` must compile, and runs twice: without and with `--remove-unused`. Both outputs must match
   `NAME.expected` — an optimization never changes what a program prints — and `NAME.astc` is the tree the pass
   leaves, `--remove-unused --ast-checked`.
 
 Want the whole suite through the pass? `./run_tests.sh --remove-unused` (or `REMOVE_UNUSED=1 ./run_tests.sh`)
-compiles every program of `tests/ok` and `tests/err` with the flag too: every one must print the same and fail
+compiles every program of `tests/ok`, `tests/err`, `tests/io` and `tests/ffi` with the flag too: every one must print the same and fail
 with the same error. Green both ways, or it isn't an optimization.
 
 New programs are named after the feature they exercise, `feature_variant`: `if-else_nested.txt`,
@@ -243,7 +254,7 @@ folder that matches what it should do.
 
 GitHub Actions runs the same tests on every push and every pull request into `main`
 ([`.github/workflows/tests.yml`](.github/workflows/tests.yml)): Ubuntu 24.04, LLVM 18, Python 3.12 and llvmlite,
-then `./run_tests.sh` and one `full_compiler.sh` build down to a native binary.
+then `./run_tests.sh`, `./run_tests.sh --remove-unused` and one `full_compiler.sh` build down to a native binary.
 
 To catch a failure before it leaves your machine, turn on the pre-push hook, once per clone:
 
@@ -529,6 +540,51 @@ exit n                                      → Program exit with result 0
 - `print` has no value, so `i32 x{print(1)}` is an error. `read` and `print` are reserved words: no variable,
   function, parameter, field or member function can have either name.
 
+**Calling C**
+
+```
+struct Point                                 extern fn abs := (i32 v) -> i32
+{                                            extern fn isqrt := (i32 v) -> i32
+    i32 x
+    i32 y                                    print("Enter a point (x y):")
+    fn d2 := () -> i32                       Point p{read(), read()}
+    {                                        print(p)
+        i32 r{x * x + y * y}                 print(p.d1())
+        exit r                               exit isqrt(p.d2())
+    }
+    fn d1 := () -> i32                       // tests/ffi/geometry.c
+    {                                        int isqrt(int v) { ... }
+        i32 r{abs(x) + abs(y)}
+        exit r                               -3 4  →  Point{x: -3, y: 4}
+    }                                                 7
+}                                                     Program exit with result 5
+```
+
+- `extern fn name := (Type a, ...) -> Type` is a signature line with **no block**: the body is in C. It stands
+  among the `fn` declarations, in any order with them — after the structs, before the statements, never in a
+  block or a struct.
+- It is called like any global function: from the statements, from functions and from member functions.
+- In the IR it is a declaration under its **own C name**, `declare i32 @"abs"(i32 %".1")`, not under the `fn_`
+  name the compiler gives its own functions. The linker resolves it against libc (`abs`, `llabs`) or a C file
+  given to `clang`:
+
+  ```bash
+  python3 compiler.py tests/ffi/geometry.txt geometry.ll
+  llc -filetype=obj -relocation-model=pic geometry.ll -o geometry.o
+  clang -fPIE geometry.o tests/ffi/geometry.c -o geometry
+  ```
+
+  Without `geometry.c` the link fails with an undefined reference to `isqrt`; `nm geometry.o` shows `U abs` and
+  `U isqrt` next to `U printf` and `U scanf`.
+- **Only `i32` and `i64` cross into C** — C's `int` and `long long`. The linker matches names, never types, so a
+  declaration is a promise nobody checks. C passes a `struct Point` as one 64-bit integer where the compiler
+  passes its fields one by one, and C's `bool` is an `i1` with `zeroext` on x86-64 and Apple arm64 but a plain
+  `i1` on Linux aarch64: the checker refuses both, as parameters and as results.
+- The C name must be free in the module: not `main`, `printf`, `scanf`, a string the compiler emits, the IR name
+  of a function of the program (`fn_twice`) or of a member function (`Point_d2`).
+- With `--remove-unused` an extern nobody calls goes like any global function, and a call of one always stays:
+  its body may print.
+
 The rules:
 
 - An initialiser and the right-hand side of `:=` are an expression: any chain of constants and variables
@@ -550,7 +606,7 @@ The rules:
   optionally under `!` — never an operation. At
   the top level it must be an integer or a bool.
 - Names are ASCII letters, digits and `_`, and can't start with a digit. `i32`, `i64`, `bool`, `mut`, `exit`,
-  `if`, `else`, `while`, `struct`, `fn`, `true`, `false`, `read` and `print` are reserved. Functions have names of their own:
+  `if`, `else`, `while`, `struct`, `fn`, `extern`, `true`, `false`, `read` and `print` are reserved. Functions have names of their own:
   a variable and a function may share one — but then `f(...)` can't be called, since it could mean either.
 - A variable is declared once per block, before its first use, and can't appear in its own initialiser
   (in a block that shadows it, the initialiser reads the outer one).
@@ -626,8 +682,8 @@ have been typed.
 | Caught by | What gets you caught |
 |---|---|
 | lexer | an unknown byte (anything outside the language, including `/`, `<`, `>` on its own, bytes above 127 and `\r`); a letter inside a number (`10x`); a `:` not followed by `=`; a lone `=`; a string literal not closed on its line (at its opening `"`) |
-| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a field after a member function, a member function before the first field; a function body that doesn't end with `exit`; a call alone on a line, a member call too; `:=` after a call result; `read` or `print` used as a name; `read` with an argument; `print()` or `print(a, b)`; `print` used as a value; a string literal anywhere but in `print`; a missing `,` or `)` in a signature or a call; a capture list on a member function, a missing `,` or `]` in one; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit` |
-| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function. Member functions: a field and a member function with the same name, or two member functions; a name that is not a parameter, a variable or a field; a member function the struct doesn't declare, a call on an integer or a bool, a call on a type; a `.` after a call whose result isn't a struct, or a field the result doesn't have; a mutating call through a link that isn't `mut`; a write to a const field. Callable objects: a call of a variable whose struct has no `call`, or of an integer or a bool; a name that is both a variable and a function, at the call; the wrong arguments or a mutating `call` through a const link, named after the object. Lambdas: a name of the scopes around the body used without a capture; an assignment to a const capture; a name captured twice; a capture that names no visible variable; a parameter named like a capture; a lambda calling itself; a lambda passed as an argument, as the value of `exit`, in a declaration, on either side of `:=` or in `print`; a capture read from outside (`add_k.k`) |
+| parser | a struct after a function, or a struct or function after a statement (or inside a block); a struct with no fields; a field after a member function, a member function before the first field; a function body that doesn't end with `exit`; a call alone on a line, a member call too; `:=` after a call result; `read` or `print` used as a name; `read` with an argument; `print()` or `print(a, b)`; `print` used as a value; a string literal anywhere but in `print`; a missing `,` or `)` in a signature or a call; a capture list on a member function, a missing `,` or `]` in one; a line that isn't a declaration, an assignment, an `if`, a `while` or `exit`; a declaration without `{initialiser}` or with its `}` missing; two operators in a row; an operator at the end of a line; two comparisons in one expression; extra tokens after a statement, including `{` on the `if` or `while` line; no `{` line after `if`, `else` or `while`; an empty block; a `{` that is never closed; `else` without an `if`; a statement after `exit` in the same block; a program with no `exit`; `extern` without `fn`, a block after an `extern` line, `extern` in a block or a struct (`'extern' is not allowed here`), `extern` after the statements |
+| semantic pass | every type rule — a `bool` in arithmetic, a `bool` compared with an integer, an `i64` value narrowing into an `i32`, a `bool` and an integer meeting across `{}` or `:=`, a constant too large for the type it lands in, an `if` or `while` condition that isn't a `bool`, `!` on an integer — plus using a variable before its declaration or after its block, declaring one twice in the same block, and assigning to one that isn't `mut`. Structs: an unknown type, a struct that contains itself, a duplicate struct or field, the wrong number of values in `{}` (at any depth), a `{}` for a built-in field or variable, a field that doesn't exist, a write through a link that isn't `mut`, `:=` on an object with a const field inside, comparing objects, `exit` of an object at the top level. Functions: an undeclared function, the wrong number or types of arguments, an `exit` of the wrong type, a duplicate function or parameter, assigning to a parameter, a top-level variable used in a function. Member functions: a field and a member function with the same name, or two member functions; a name that is not a parameter, a variable or a field; a member function the struct doesn't declare, a call on an integer or a bool, a call on a type; a `.` after a call whose result isn't a struct, or a field the result doesn't have; a mutating call through a link that isn't `mut`; a write to a const field. Callable objects: a call of a variable whose struct has no `call`, or of an integer or a bool; a name that is both a variable and a function, at the call; the wrong arguments or a mutating `call` through a const link, named after the object. Lambdas: a name of the scopes around the body used without a capture; an assignment to a const capture; a name captured twice; a capture that names no visible variable; a parameter named like a capture; a lambda calling itself; a lambda passed as an argument, as the value of `exit`, in a declaration, on either side of `:=` or in `print`; a capture read from outside (`add_k.k`). Extern functions: a parameter or a result other than `i32` and `i64`; a C name the module already uses (`main`, `printf`, `scanf`, a member function's `Point_d2`, an own function's `fn_twice`); a name declared twice, with another `extern` or a `fn` |
 | the walk | nothing. By the time it runs, the tree has been checked |
 
 ---
@@ -699,8 +755,8 @@ grammar.ebnf        the grammar of the language in EBNF, one rule per shape
 src/
   lexer.py          Token and lex(): a hand-written byte-by-byte state machine (START, IDENT, NUMBER, STRING, COLON, EQ, BANG, MINUS)
   parser.py         Parser: recursive descent with a line cursor and a token cursor, one method per grammar rule
-  ast_nodes.py      the tree: Node, ProgramNode, StructNode, MemberNode, FnNode, MemberFnNode, ParamNode, ThisParam,
-                    DeclNode, AssignNode, IfNode, WhileNode, PrintNode, LambdaNode, Capture, BlockNode, ExitNode,
+  ast_nodes.py      the tree: Node, ProgramNode, StructNode, MemberNode, FnNode, MemberFnNode, ExternFnNode, ParamNode,
+                    ThisParam, DeclNode, AssignNode, IfNode, WhileNode, PrintNode, LambdaNode, Capture, BlockNode, ExitNode,
                     BinOpNode, NotNode, VarNode, FieldNode, CallNode, MemberCallNode, CallableCallNode,
                     ResultFieldNode, InitNode, ReadNode, StringNode, BoolNode, ConstNode
   semantic.py       SemanticChecker: the walk that owns the scope stack, the struct and function tables, types
@@ -710,12 +766,17 @@ src/
                     zero, again until a round removes nothing
   codegen.py        CodeGen: the walk that emits IR with llvmlite.ir.IRBuilder — functions, named struct types, gep,
                     call, basic blocks, cbranch, sext, icmp, select, extractvalue, printf and scanf
+  ir_names.py       the names the generator gives things in the module (fn_ prefix, Point_d2, printf, ...), shared
+                    with the semantic pass, which keeps an extern off them
   errors.py         CompileError with line and column
 tests/ok/           programs that must compile, with their .expected output (and .ast, .ast-checked and .in files for some)
 tests/err/          programs that must fail, with their .expected error message
+tests/io/           programs built as native binaries, each with its sessions NAME.S.in / NAME.S.expected
+tests/ffi/          the same with extern functions, and the NAME.c that holds their C bodies
 tests/opt/          programs for --remove-unused: the same .expected with and without it, and the .astc tree it leaves
 run_tests.sh        runs every test and compares it against its .expected (and .ast, .ast-checked, .astc) file;
-                    --remove-unused sends tests/ok and tests/err through the pass too
+                    builds tests/io and tests/ffi as binaries and runs their sessions; --remove-unused sends
+                    every program through the pass too
 full_compiler.sh    compiler.py + llc + clang + run, in one shot
 githooks/pre-push   runs the tests before every git push (on with: git config core.hooksPath githooks)
 .github/workflows/  tests.yml: the GitHub Actions run of the tests
@@ -739,7 +800,7 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
    per rule of `grammar.ebnf`. A declaration is one line; an `if` (or a `while`) reads its condition line, the
    `{` line, every line of the block and the `}` line — and the program and every block are read by the same loop, which is
    why blocks nest for free. The program itself is read in order: structs while the next line starts with
-   `struct`, functions while it starts with `fn`, then statements — so a struct or a function out of place reaches
+   `struct`, functions while it starts with `fn` or `extern`, then statements — so a struct or a function out of place reaches
    the statement parser, which reports it at that line. One token of look-ahead decides almost every choice:
    `i32` starts a declaration, `if` an if, a name followed by `(` a call and by `.` a field chain. The exception is
    a line that starts with a name: `Point p{…}` is a declaration, `p := …` an assignment, so there the parser
@@ -815,6 +876,9 @@ githooks/pre-push   runs the tests before every git push (on with: git config co
      point at a body that doesn't exist yet. Each function gets its own `entry` block and builder; its parameters
      are stored into slots there, so the body reads them with a plain `load`. The top-level statements become
      `main`.
+   - An `extern fn` is the one function without a prefix: `declare i32 @"abs"(i32 %".1")`, a type and no body,
+     declared before the member functions and the strings take their names. The checker has already refused a
+     name the module holds, so `get_unique_name` never gives it a suffix the linker wouldn't find.
    - A struct is a named type, `%"Point" = type {i32, i32}`, and an object is one `alloca` of it. A field is reached
      with `getelementptr`: `0` to step through the pointer, then one index per link — `c.center.x` is
      `gep %c, 0, 0, 0`. A whole object moves as one value: one `load` of `%"Point"` and one `store`, which is how

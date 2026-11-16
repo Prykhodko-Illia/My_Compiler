@@ -1,0 +1,31 @@
+struct Step
+{
+    i32 dx
+    i32 dy
+
+    fn length := () -> i32
+    {
+        i32 r{abs(dx) + abs(dy)}
+        exit r
+    }
+}
+
+fn far := (i64 v) -> i64
+{
+    i64 r{llabs(v) * 2}
+    exit r
+}
+
+extern fn abs := (i32 v) -> i32
+extern fn llabs := (i64 v) -> i64
+
+i32 a{abs(0 - 7)}
+print(a)
+print(abs(12))
+i64 b{llabs(0 - 5000000000)}
+print(b)
+print(llabs(a - 10))
+print(far(0 - 3))
+Step s{0 - 2, 5}
+print(s.length())
+exit abs(a - 50)

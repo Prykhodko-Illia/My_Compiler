@@ -1,0 +1,7 @@
+extern fn twice := (i32 v) -> i32
+{
+    i32 r{v * 2}
+    exit r
+}
+
+exit twice(2)

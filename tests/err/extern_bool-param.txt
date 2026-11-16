@@ -1,0 +1,3 @@
+extern fn isalpha := (bool c) -> i32
+
+exit isalpha(true)

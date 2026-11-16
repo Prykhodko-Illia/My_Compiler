@@ -122,7 +122,7 @@ class ProgramNode(Node):
     def __init__(self, line, col, structs, fns, statements, exit):
         super().__init__(line, col)
         self.structs = structs            # [StructNode], first
-        self.fns = fns                    # [FnNode], after the structs, before the statements
+        self.fns = fns                    # [FnNode | ExternFnNode], after the structs, before the statements
         self.statements = statements      # [StmtNode]
         self.exit = exit                  # ExitNode
         # The struct of every lambda, made by the semantic pass in the order it meets them.
@@ -207,6 +207,24 @@ class MemberFnNode(FnNode):
 
     def accept(self, visitor):
         return visitor.visit_member_fn(self)
+
+
+class ExternFnNode(FnNode):
+    """extern fn abs := (i32 v) -> i32 -- a function defined in C: a signature and no body.
+    It is called like any global function; in the IR it is a declaration under its own C
+    name, and the linker finds the body."""
+
+    def __init__(self, line, col, name, params, result_type, result_at):
+        super().__init__(line, col, name, params, result_type, result_at, None)
+
+    def label(self):
+        return f"ExternFn {self.name} -> {self.result_type}"
+
+    def children(self):
+        return list(self.params)
+
+    def accept(self, visitor):
+        return visitor.visit_extern_fn(self)
 
 
 class ParamNode(Node):

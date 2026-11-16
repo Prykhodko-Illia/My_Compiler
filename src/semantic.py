@@ -121,6 +121,14 @@ The member function rules:
   * a call result is a temporary copy: a field of it may be read when it is a struct, and
     any member function may be called on it, a mutating one too.
 
+The extern rules (extern fn abs := (i32 v) -> i32, a function defined in C):
+  * it is called like any global function, and shares their table: a name declared twice
+    is the same error as for two fn;
+  * every parameter and the result is i32 or i64, C's int and long long -- the linker
+    matches names, never types, and a bool or a struct is passed differently by C;
+  * its name is not one the module already holds: main, printf, scanf, a global string
+    of the generator, the IR name of a function of the program or of a member function.
+
 The callable object rules:
   * name(args) on a variable needs a struct that declares call -- not a struct without
     one, not an integer or a bool -- and is name.call(args);
@@ -141,10 +149,11 @@ The lambda rules:
     an assignment or the value of a print, and its captures are not visible outside it.
 """
 
-from .ast_nodes import (CallableCallNode, CallNode, ConstNode, DeclNode, FieldNode, InitNode, LambdaNode, Link,
+from .ast_nodes import (CallableCallNode, CallNode, ConstNode, DeclNode, ExternFnNode, FieldNode, InitNode, LambdaNode, Link,
                         MemberCallNode, MemberFnNode, MemberNode, ParamNode, ReadNode, ResultFieldNode, StructNode,
                         ThisParam, VarNode, chain)
 from .errors import CompileError, error_at
+from .ir_names import MODULE_NAMES, fn_name, member_name
 
 I32_MAX = 2**31 - 1
 I64_MAX = 2**63 - 1
@@ -313,6 +322,9 @@ class SemanticChecker:
                 method.struct, method.this = struct, ThisParam(struct.name)
         for fn in node.fns:
             self.declare_fn(fn)
+        for fn in node.fns:               # once every name is known: an extern may clash with one below it
+            if isinstance(fn, ExternFnNode):
+                self.check_extern(fn, node.structs)
         for method in methods:            # ...then every body, which may call any of them:
             method.accept(self)           # the member bodies first, for the mutation rule
         self.mark_mutating([*methods, *self.lambda_methods])     # with the lambdas inside them
@@ -331,6 +343,25 @@ class SemanticChecker:
             raise error_at(node, f"function '{node.name}' is already declared at line {prev.line}:{prev.col}")
         self.check_signature(node)
         self.fns[node.name] = node
+
+    def check_extern(self, node, structs):
+        """What may cross into C. The linker matches names, never types, so only the
+        promises the generator can keep are accepted: i32 is C's int, i64 its long long.
+        A bool or a struct is passed differently by C, and differently on different
+        machines. And the C name must be free in the module: main, printf, scanf, a
+        global string, the IR name of a function of the program or of a member function."""
+        for param in node.params:
+            if param.type_name not in INTEGERS:
+                raise CompileError(*param.type_at, f"parameter '{param.name}' of extern function '{node.name}' "
+                                                   f"has type '{param.type_name}': only i32 and i64 cross into C")
+        if node.result_type not in INTEGERS:
+            raise CompileError(*node.result_at, f"extern function '{node.name}' returns "
+                                                f"'{node.result_type}': only i32 and i64 cross into C")
+        used = {*MODULE_NAMES,
+                *(fn_name(fn.name) for fn in self.fns.values() if not isinstance(fn, ExternFnNode)),
+                *(member_name(struct.name, method.name) for struct in structs for method in struct.methods)}
+        if node.name in used:
+            raise error_at(node, f"'{node.name}' is a name the compiler already uses in the module")
 
     def check_signature(self, node):
         names = set()
@@ -369,6 +400,9 @@ class SemanticChecker:
 
     # A member body is checked the same way: the fields of its object come in through find().
     visit_member_fn = visit_fn
+
+    def visit_extern_fn(self, node):
+        pass                              # a signature only, checked with the others
 
     def visit_struct(self, node):
         if node.name in self.structs:

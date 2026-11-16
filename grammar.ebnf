@@ -12,6 +12,7 @@
  *   "mut" "exit"          keyword tokens
  *   "if" "else" "while"   keyword tokens
  *   "struct" "fn"         keyword tokens
+ *   "extern"              keyword token: a function whose body is in C
  *   "true" "false"        keyword tokens: the boolean literals
  *   "read" "print"        keyword tokens: the built-in functions, so never a name
  *   "{" "}"               block tokens
@@ -53,13 +54,15 @@
  * no top-level variable.
  *)
 
-program   ::= { struct } { fn } { statement } exit
+program   ::= { struct } { fn | extern } { statement } exit
 
 struct    ::= "struct" ident NL "{" NL field_decl { field_decl } { fn } "}" NL
 
 field_decl::= type [ "mut" ] ident NL
 
 fn        ::= "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL block
+
+extern    ::= "extern" "fn" ident ":=" "(" [ type ident { "," type ident } ] ")" "->" type NL
 
 statement ::= decl | assign | if | while | print | lambda
 
@@ -128,6 +131,12 @@ print     ::= "print" "(" ( string | expr ) ")"
  * The order of program is fixed: structs, then functions, then statements. A function's
  * block must end with exit, which the rule cannot say (a block's exit is optional), so the
  * parser checks it. fn and struct are not statements, so neither can stand in a block.
+ *
+ * An extern is a function's signature line with no block: its body is in C, and the
+ * linker finds it. It stands among the functions, in any order with them; a "{" on the
+ * line after it is a body it cannot have. extern is not a statement, so it cannot stand
+ * in a block or after the statements. Which types may cross into C, and which names are
+ * already taken in the module, are the semantic pass's questions.
  *
  * A lambda is a statement: a function with a capture list in "[" "]", standing among the
  * top-level statements or in any block. It starts like fn, so the parser tells the two

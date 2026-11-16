@@ -1,0 +1,4 @@
+extern fn abs := (i32 v) -> i32
+
+i64 big{5000000000}
+exit abs(big)
